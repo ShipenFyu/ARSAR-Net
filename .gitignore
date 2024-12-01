@@ -5,11 +5,13 @@
 __pycache__/
 
 # data: update .py
-data/
+data/*
+!data/
 !data/*.py
 
 # log
 *.log
 
 # weights
-weights/
+weights/*
+!weights/
