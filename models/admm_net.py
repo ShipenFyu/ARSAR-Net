@@ -119,28 +119,33 @@ class ReconstructionLayer(nn.Module):
         self.rho = rho
         self.operator = operator
         self.is_first = is_first
-        self.Phi_fast = Phi_fast
-        self.Phi_slow = Phi_slow
+
+        Phi_fast_H = Phi_fast.conj().permute(0, 2, 1)
+        Phi_slow_H = Phi_slow.conj().permute(0, 2, 1)
+        Phi_fast_a = torch.matmul(Phi_fast, Phi_fast_H)
+        Phi_slow_a = torch.matmul(Phi_slow_H, Phi_slow)
+
+        rho_detached = self.rho.detach()  # it's ok?
+        
+        identity_right = rho_detached.cuda() * torch.eye(Phi_fast_a.shape[1]).expand(Phi_fast_a.shape[0], -1, -1).cuda()
+        identity_left = rho_detached.cuda() * torch.eye(Phi_slow_a.shape[1]).expand(Phi_slow_a.shape[0], -1, -1).cuda()
+        coffe_matrix_right = Phi_fast_a + identity_right
+        coffe_matrix_left = Phi_slow_a + identity_left
+        
+        self.Phi_fast_H = Phi_fast_H
+        self.Phi_slow_H = Phi_slow_H
+        self.inverse_matrix_right = torch.inverse(coffe_matrix_right)
+        self.inverse_matrix_left = torch.inverse(coffe_matrix_left)        
 
     def forward(self, input, z, beta):
-        Phi_fast_H = self.Phi_fast.conj().permute(0, 2, 1)
-        Phi_slow_H = self.Phi_slow.conj().permute(0, 2, 1)
-        Phi_fast_a = torch.matmul(self.Phi_fast, Phi_fast_H)
-        Phi_slow_a = torch.matmul(Phi_slow_H, self.Phi_slow)
-        coffe_matrix_right = Phi_fast_a + self.rho * torch.eye(Phi_fast_a.shape[1]).expand(Phi_fast_a.shape[0], -1, -1).cuda()
-        coffe_matrix_left = Phi_slow_a + self.rho * torch.eye(Phi_slow_a.shape[1]).expand(Phi_slow_a.shape[0], -1, -1).cuda()
-        
-        inverse_matrix_right = torch.inverse(coffe_matrix_right)
-        inverse_matrix_left = torch.inverse(coffe_matrix_left)
-    
-        trivial_value = torch.matmul(torch.matmul(Phi_slow_H, input), Phi_fast_H)
+        trivial_value = torch.matmul(torch.matmul(self.Phi_slow_H, input), self.Phi_fast_H)
         if self.is_first:
             value = torch.zeros_like(trivial_value, device='cuda')  # initialize
         else:
             value = torch.sub(z, beta)
         mid_value = trivial_value * self.operator + self.rho * value
 
-        return torch.matmul(torch.matmul(inverse_matrix_left, mid_value), inverse_matrix_right)
+        return torch.matmul(torch.matmul(self.inverse_matrix_left, mid_value), self.inverse_matrix_right)
 
 
 class MultipleLayer(nn.Module):
@@ -161,12 +166,16 @@ class ConvolutionNormalLayer(nn.Module):
         super(ConvolutionNormalLayer, self).__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, padding=int((kernel_size - 1) / 2), 
                               stride=1, dilation=1, bias=True)
+        self.bn = nn.BatchNorm2d(out_channels)
     
     def forward(self, z):
         real_part = self.conv(z.real)
         imag_part = self.conv(z.imag)
 
-        return torch.complex(real_part, imag_part)
+        bn_real = self.bn(real_part)
+        bn_imag = self.bn(imag_part)
+
+        return torch.complex(bn_real, bn_imag)
     
 
 class ConvolutionConjLayer(nn.Module):
@@ -174,12 +183,16 @@ class ConvolutionConjLayer(nn.Module):
         super(ConvolutionConjLayer, self).__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, padding=int((kernel_size - 1) / 2), 
                               stride=1, dilation=1, bias=True)
+        self.bn = nn.BatchNorm2d(out_channels)
         
     def forward(self, h):
         real_part = self.conv(h.real)
         imag_part = self.conv(h.imag)
 
-        return torch.complex(real_part, imag_part)
+        bn_real = self.bn(real_part)
+        bn_imag = self.bn(imag_part)
+
+        return torch.complex(bn_real, bn_imag)
 
 
 class NonLinearLayer(nn.Module):

@@ -20,13 +20,14 @@ from logs.log_utils import configure_logging, log_training_info
 parser = argparse.ArgumentParser(description='Implicit Regularization Training')
 parser.add_argument('--trn_dataset', default='data', help='Training dataset directory')
 parser.add_argument('--network', default='ir', help='Backbone network pnp or ir')
-parser.add_argument('--epochs', default=80, type=int, help='Epochs')
-parser.add_argument('--nsave', default=5, help='Save model after every nSave epoch')
+parser.add_argument('--epochs', default=40, type=int, help='Epochs')
+parser.add_argument('--nsave', default=2, help='Save model after every nSave epoch')
 parser.add_argument('--batch_size', default=2, type=int, help='Batch size for training')
-parser.add_argument('--lr', default=1e-3, type=float, help='Initial learning rate')
-parser.add_argument('--layer_num', default=7, type=int, help='Net block num in iteration')
-parser.add_argument('--internal_iteration', default=6, type=int, help='ADMM-Net z block iteration num')
+parser.add_argument('--lr', default=5e-4, type=float, help='Initial learning rate')
+parser.add_argument('--layer_num', default=9, type=int, help='Net block num in iteration')
+parser.add_argument('--internal_iteration', default=5, type=int, help='ADMM-Net z block iteration num')
 parser.add_argument('--gpu_list', type=str, default='0', help='GPU index')
+parser.add_argument('--checkpoint', default=None, help='Continue model training')
 
 args = parser.parse_args()
 
@@ -63,6 +64,7 @@ with h5py.File('./%s/%s' % (args.trn_dataset, training_echo), 'r') as f:
 
 train_dataset = TensorDataset(image_labels_tensor, echo_labels_tensor)
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+print('DataLoader Finished!')
 
 weights_dir = os.path.join('./weights', datetime.now().strftime("%Y_%m_%d"))
 if not os.path.exists(weights_dir):
@@ -74,6 +76,7 @@ if network == 'ir':
     model = ADMMBasicNet(left_matrix, right_matrix, operator, args.layer_num, args.internal_iteration).to(device)
 else:
     raise ValueError(f'unknown network name {network} found!')
+print('Model Initialized!')
 
 
 class NRMSE(nn.Module):
@@ -87,7 +90,7 @@ class NRMSE(nn.Module):
         target = abs(target)
 
         scale = torch.linalg.matrix_norm(target)
-        nrmse = self.mse_loss(output, target) / torch.mean(scale)
+        nrmse = self.mse_loss(output, target) / torch.sqrt(torch.mean(scale))
 
         return nrmse
 
@@ -104,7 +107,7 @@ def save_checkpoint(model_cur, optimizer_cur, epoch, loss):
         'optimizer_state_dict': optimizer_cur.state_dict(),
         'loss': loss,
     }
-    savemodel = os.path.join(weights_dir, f'weights_model_{network}_epochs_{epochs}' + 
+    savemodel = os.path.join(weights_dir, f'weights_model_{network}_epochs_{epoch}_' + 
                              f'{datetime.now().strftime("%H_%M_%S")}.pt')
     torch.save(checkpoint, savemodel)
 
@@ -135,7 +138,7 @@ def train(checkpoint=None):
     model.train()
     for epoch in range(start_epoch, epochs):
         epoch_loss = []
-        for clip in tqdm(train_loader):
+        for clip in tqdm(train_loader, desc=f'Training Epoch: [{epoch + 1}/{epochs}]'):
             image, echo = clip[0].to(device), clip[1].to(device)
             output = model(echo)
 
@@ -146,8 +149,8 @@ def train(checkpoint=None):
 
             epoch_loss.append(loss.item())
 
-        avgTrnLoss = torch.mean(epoch_loss)
-        print(f'Epoch [{epoch + 1}/{args.epochs}], Loss: {avgTrnLoss:.6f}')
+        avgTrnLoss = np.mean(epoch_loss)
+        print(f'Loss: {avgTrnLoss:.6f}')
         log_training_info(logger, f'Epoch [{epoch + 1}/{args.epochs}], Loss: {avgTrnLoss:.6f}')
 
         if (epoch + 1) % args.nsave == 0:
@@ -160,4 +163,5 @@ def train(checkpoint=None):
 
 
 if __name__ == '__main__':
-    train()
+    checkpoint = args.checkpoint
+    train(checkpoint)

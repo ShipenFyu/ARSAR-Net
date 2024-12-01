@@ -13,7 +13,7 @@ def get_fourier_matrix(dim):
     jTwoPi = torch.tensor(1j * 2 * np.pi, dtype=torch.complex64)  # 1j * 2π
     scale = torch.tensor(1. / np.sqrt(dim), dtype=torch.complex64)  # 1/sqrt(N)
 
-    Ah = torch.exp(-jTwoPi * (k - 1 / 2) * (n - dim / 2)) * scale
+    Ah = torch.exp(-jTwoPi * (k - 1 / 2) * n) * scale
     Aht = Ah.conj().permute(1, 0)
 
     return Ah, Aht
