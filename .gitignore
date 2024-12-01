@@ -1,0 +1,15 @@
+# pycharm config
+.idea/
+
+# cache
+__pycache__/
+
+# data: update .py
+data/
+!data/*.py
+
+# log
+*.log
+
+# weights
+weights/
