@@ -13,6 +13,7 @@ import time
 from tqdm import tqdm
 
 from utils.observation_matrix import get_ob_matrix
+from utils.config import device_index
 from models.lr_net import ADMMIRNet
 from models.pnp_net import ADMMPnPNet
 from logs.log_utils import configure_logging, log_training_info
@@ -27,9 +28,9 @@ parser.add_argument('--batch_size', default=2, type=int, help='Batch size for tr
 parser.add_argument('--lr', default=5e-4, type=float, help='Initial learning rate')
 parser.add_argument('--layer_num', default=9, type=int, help='Net block num in iteration')
 parser.add_argument('--internal_iteration', default=6, type=int, help='ADMM-Net z block iteration num')
-parser.add_argument('--gpu_list', type=str, default='0', help='GPU index')
 parser.add_argument('--checkpoint', default=None, help='Continue model training')
 parser.add_argument('--regularization', default='l1', help='The regularization type to PnP network')
+parser.add_argument('--device', default=device_index, help='The regularization type to PnP network')
 
 args = parser.parse_args()
 
@@ -37,8 +38,7 @@ network = args.network
 epochs = args.epochs
 batch_size = args.batch_size
 
-os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_list
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+device = torch.device(args.device_index if torch.cuda.is_available() else "cpu")
 if platform.system() == 'Windows':
     num_workers = 0
 else:

@@ -2,6 +2,10 @@ import torch
 import torchpwl
 import torch.nn as nn
 
+from utils.config import device_index
+
+device = torch.device(device_index if torch.cuda.is_available() else "cpu")
+
 
 class ADMMIRNet(nn.Module):
     def __init__(
@@ -36,7 +40,7 @@ class ADMMIRNet(nn.Module):
     def forward(self, input):
         x = self.reconstruction_start(input, 0, 0)
         beta = self.multiple(0, x, 0)
-        z = torch.zeros_like(x, device='cuda')
+        z = torch.zeros_like(x, device=device_index)
 
         input_dict = dict()
         input_dict['input'] = input
@@ -130,8 +134,8 @@ class ReconstructionLayer(nn.Module):
 
         rho_detached = self.rho.detach()  # it's ok?
         
-        identity_right = rho_detached.cuda() * torch.eye(Phi_fast_a.shape[1]).expand(Phi_fast_a.shape[0], -1, -1).cuda()
-        identity_left = rho_detached.cuda() * torch.eye(Phi_slow_a.shape[1]).expand(Phi_slow_a.shape[0], -1, -1).cuda()
+        identity_right = rho_detached.to(device) * torch.eye(Phi_fast_a.shape[1]).expand(Phi_fast_a.shape[0], -1, -1).to(device)
+        identity_left = rho_detached.to(device) * torch.eye(Phi_slow_a.shape[1]).expand(Phi_slow_a.shape[0], -1, -1).to(device)
         coffe_matrix_right = Phi_fast_a + identity_right
         coffe_matrix_left = Phi_slow_a + identity_left
         
@@ -143,7 +147,7 @@ class ReconstructionLayer(nn.Module):
     def forward(self, input, z, beta):
         trivial_value = torch.matmul(torch.matmul(self.Phi_slow_H, input), self.Phi_fast_H)
         if self.is_first:
-            value = torch.zeros_like(trivial_value, device='cuda')  # initialize
+            value = torch.zeros_like(trivial_value, device=device_index)  # initialize
         else:
             value = torch.sub(z, beta)
         mid_value = trivial_value * self.operator + self.rho * value
@@ -159,7 +163,7 @@ class MultipleLayer(nn.Module):
 
     def forward(self, beta, x, z):
         if self.is_first:
-            return torch.zeros_like(x, device='cuda')  # initialize
+            return torch.zeros_like(x, device=device_index)  # initialize
         else:
             return torch.add(beta, self.eta * torch.sub(x, z))
     

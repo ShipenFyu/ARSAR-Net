@@ -12,34 +12,34 @@ from tqdm import tqdm
 
 from utils.observation_matrix import get_ob_matrix
 from utils.evaluate import normalize, psnr_evaluate, ssim_evaluate
+from utils.config import device_index
 from models.lr_net import ADMMIRNet
 from models.pnp_net import ADMMPnPNet
 
 
 parser = argparse.ArgumentParser(description='Implicit Regularization Testing')
-parser.add_argument('--tst_dataset', default='data', help='Training dataset directory')
+parser.add_argument('--tst_dataset', default='data', help='Testing dataset directory')
 parser.add_argument('--network', default='ir', help='Backbone network pnp or ir')
-parser.add_argument('--batch_size', default=2, type=int, help='Batch size for training')
+parser.add_argument('--batch_size', default=2, type=int, help='Batch size for testing')
 parser.add_argument('--layer_num', default=9, type=int, help='Net block num in iteration')
 parser.add_argument('--internal_iteration', default=6, type=int, help='ADMM-Net z block iteration num')
 parser.add_argument('--regularization', default='l1', help='The regularization type to PnP network')
-parser.add_argument('--gpu_list', type=str, default='0, 1', help='GPU index')
+parser.add_argument('--device', default=device_index, help='The regularization type to PnP network')
 
 args = parser.parse_args()
 
 network = args.network
 batch_size = args.batch_size
 
-os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_list
-device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+device = torch.device(args.device_index if torch.cuda.is_available() else "cpu")
 if platform.system() == 'Windows':
     num_workers = 0
 else:
     num_workers = 0  # workers error
 
-testing_image = 'Testing_DataX.mat'
-with h5py.File('./%s/%s' % (args.trn_dataset, testing_image), 'r') as f:
-    image_labels = f['Testing_DataX']
+testing_image = 'Training_DataX.mat'
+with h5py.File('./%s/%s' % (args.tst_dataset, testing_image), 'r') as f:
+    image_labels = f['Training_DataX']
     image_labels = np.transpose(image_labels, (2, 1, 0))[:8, :, :]  # 8 samples for test
     real_part = image_labels['real']
     imag_part = image_labels['imag']
@@ -50,9 +50,9 @@ with h5py.File('./%s/%s' % (args.trn_dataset, testing_image), 'r') as f:
     image_labels_tensor = torch.complex(torch.tensor(real_part, dtype=torch.float32), 
                                         torch.tensor(imag_part, dtype=torch.float32)).to(device)
 
-testing_echo = 'Testing_DataY.mat'
-with h5py.File('./%s/%s' % (args.trn_dataset, testing_echo), 'r') as f:
-    echo_labels = f['Testing_DataY']
+testing_echo = 'Training_DataY.mat'
+with h5py.File('./%s/%s' % (args.tst_dataset, testing_echo), 'r') as f:
+    echo_labels = f['Training_DataY']
     echo_labels = np.transpose(echo_labels, (2, 1, 0))[:8, :, :]
     real_part = echo_labels['real']
     imag_part = echo_labels['imag']
@@ -90,8 +90,8 @@ else:
     raise ValueError(f'unknown network name {network} found!')
 print('Model Initialized!')
 
-weights_dir = os.path.join('./weights', datetime.now().strftime("%Y_%m_%d"))
-weight_path = os.path.join(weights_dir, 'weights_model_ir_epochs_2_16_34_34.pt')
+weights_dir = os.path.join('./weights', '2024_12_02')
+weight_path = os.path.join(weights_dir, 'weights_model_ir_epochs_18_00_04_33.pt')
 
 model.load_state_dict(torch.load(weight_path)['model_state_dict'])
 model.eval()
@@ -154,7 +154,10 @@ def figure_generate(echo_norm, rec_norm, img_norm, rec_psnr, index):
         plt.axis('off')
 
         plt.subplots_adjust(left=0, right=1, top=.95, bottom=0, wspace=0.01)
-        plt.show()
+        
+        save_path = f'./images/figure_{num}.png'
+        plt.savefig(save_path, bbox_inches='tight')
+        plt.close()
     else:
         for num in index:
             plt.figure(figsize=(20, 5))
@@ -175,7 +178,10 @@ def figure_generate(echo_norm, rec_norm, img_norm, rec_psnr, index):
             plt.axis('off')
 
             plt.subplots_adjust(left=0, right=1, top=.95, bottom=0, wspace=0.01)
-            plt.show()
+            
+            save_path = f'./images/figure_{num}.png'
+            plt.savefig(save_path, bbox_inches='tight')
+            plt.close()
 
 
 if __name__ == '__main__':

@@ -10,6 +10,7 @@ lr = 1e-3
 img_size = 512
 layer_num = 9
 internal_iteration = 6
+device_index = 'cuda:0'
 
 
 # Configuration of SAR
