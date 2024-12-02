@@ -3,7 +3,7 @@ import torchpwl
 import torch.nn as nn
 
 
-class ADMMBasicNet(nn.Module):
+class ADMMIRNet(nn.Module):
     def __init__(
         self, 
         ob_matrix_left,
@@ -16,7 +16,7 @@ class ADMMBasicNet(nn.Module):
         kernel_size = 3, 
         num_breakpoints = 60,
         ):
-        super(ADMMBasicNet, self).__init__()
+        super(ADMMIRNet, self).__init__()
         self.rho = nn.Parameter(torch.tensor([0.1]), requires_grad=True)
         self.eta = nn.Parameter(torch.tensor([1.0]), requires_grad=True)
 
@@ -71,7 +71,7 @@ class BasicBlock(nn.Module):
         beta = input_dict['beta']
 
         x = self.reconstruction(input, z, beta)
-        z = self.recurrent(z, x, beta)
+        z = self.recurrent(x, beta)
         beta = self.multiple(beta, x, z)
 
         input_dict['x'] = x
@@ -92,6 +92,7 @@ class RecurrentBlock(nn.Module):
         self.conv_1 = ConvolutionNormalLayer(in_channels, out_channels, kernel_size)
         self.nonlinear = NonLinearLayer(out_channels, num_breakpoints)
         self.conv_2 = ConvolutionConjLayer(out_channels, in_channels, kernel_size)
+        self.additional_start = AdditionalLayer(self.miu_1, self.miu_2, is_first=True)
         self.additional = AdditionalLayer(self.miu_1, self.miu_2)
         self.reset_parameters()  # initialize convolution layers' weights
 
@@ -101,7 +102,9 @@ class RecurrentBlock(nn.Module):
         self.conv_1.conv.weight.data = self.conv_1.conv.weight.data * 0.025
         self.conv_2.conv.weight.data = self.conv_2.conv.weight.data * 0.025
 
-    def forward(self, z, x, beta):
+    def forward(self, x, beta):
+        z = self.additional_start(0, 0, x, beta)  # initialize
+
         for _ in range(self.iteration):
             z_channeled = torch.unsqueeze(z, 1)
             conv1 = self.conv_1(z_channeled)
@@ -208,14 +211,18 @@ class NonLinearLayer(nn.Module):
 
 
 class AdditionalLayer(nn.Module):
-    def __init__(self, miu_1, miu_2):
+    def __init__(self, miu_1, miu_2, is_first=False):
         super(AdditionalLayer, self).__init__()
         self.miu_1 = miu_1
         self.miu_2 = miu_2
+        self.is_first = is_first
     
     def forward(self, z, c, x, beta):
         variables = torch.add(x, beta)
-        mid_value = self.miu_1 * z + self.miu_2 * variables
 
-        return torch.sub(mid_value, c)
+        if self.is_first:
+            return variables
+        else:
+            mid_value = torch.add(self.miu_1 * z, self.miu_2 * variables)
+            return torch.sub(mid_value, c)
     

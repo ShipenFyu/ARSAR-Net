@@ -13,7 +13,7 @@ import time
 from tqdm import tqdm
 
 from utils.observation_matrix import get_ob_matrix
-from models.admm_net import ADMMBasicNet
+from models.lr_net import ADMMIRNet
 from logs.log_utils import configure_logging, log_training_info
 
 
@@ -25,7 +25,7 @@ parser.add_argument('--nsave', default=2, help='Save model after every nSave epo
 parser.add_argument('--batch_size', default=2, type=int, help='Batch size for training')
 parser.add_argument('--lr', default=5e-4, type=float, help='Initial learning rate')
 parser.add_argument('--layer_num', default=9, type=int, help='Net block num in iteration')
-parser.add_argument('--internal_iteration', default=5, type=int, help='ADMM-Net z block iteration num')
+parser.add_argument('--internal_iteration', default=6, type=int, help='ADMM-Net z block iteration num')
 parser.add_argument('--gpu_list', type=str, default='0', help='GPU index')
 parser.add_argument('--checkpoint', default=None, help='Continue model training')
 
@@ -73,7 +73,7 @@ if not os.path.exists(weights_dir):
 right_matrix, left_matrix, operator = get_ob_matrix(batch_size)
 
 if network == 'ir':
-    model = ADMMBasicNet(left_matrix, right_matrix, operator, args.layer_num, args.internal_iteration).to(device)
+    model = ADMMIRNet(left_matrix, right_matrix, operator, args.layer_num, args.internal_iteration).to(device)
 else:
     raise ValueError(f'unknown network name {network} found!')
 print('Model Initialized!')
