@@ -14,6 +14,7 @@ from tqdm import tqdm
 
 from utils.observation_matrix import get_ob_matrix
 from models.lr_net import ADMMIRNet
+from models.pnp_net import ADMMPnPNet
 from logs.log_utils import configure_logging, log_training_info
 
 
@@ -28,6 +29,7 @@ parser.add_argument('--layer_num', default=9, type=int, help='Net block num in i
 parser.add_argument('--internal_iteration', default=6, type=int, help='ADMM-Net z block iteration num')
 parser.add_argument('--gpu_list', type=str, default='0', help='GPU index')
 parser.add_argument('--checkpoint', default=None, help='Continue model training')
+parser.add_argument('--regularization', default='l1', help='The regularization type to PnP network')
 
 args = parser.parse_args()
 
@@ -40,7 +42,7 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 if platform.system() == 'Windows':
     num_workers = 0
 else:
-    num_workers = 0
+    num_workers = 0  # workers error
 
 training_image = 'Training_DataX.mat'
 with h5py.File('./%s/%s' % (args.trn_dataset, training_image), 'r') as f:
@@ -73,7 +75,22 @@ if not os.path.exists(weights_dir):
 right_matrix, left_matrix, operator = get_ob_matrix(batch_size)
 
 if network == 'ir':
-    model = ADMMIRNet(left_matrix, right_matrix, operator, args.layer_num, args.internal_iteration).to(device)
+    model = ADMMIRNet(
+        left_matrix, 
+        right_matrix, 
+        operator, 
+        args.layer_num, 
+        args.internal_iteration,
+        ).to(device)
+elif network == 'pnp':
+    model = ADMMPnPNet(
+        left_matrix, 
+        right_matrix, 
+        operator, 
+        args.layer_num, 
+        args.internal_iteration,
+        args.regularization,
+        ).to(device)
 else:
     raise ValueError(f'unknown network name {network} found!')
 print('Model Initialized!')
@@ -107,9 +124,9 @@ def save_checkpoint(model_cur, optimizer_cur, epoch, loss):
         'optimizer_state_dict': optimizer_cur.state_dict(),
         'loss': loss,
     }
-    savemodel = os.path.join(weights_dir, f'weights_model_{network}_epochs_{epoch}_' + 
+    save_model = os.path.join(weights_dir, f'weights_model_{network}_epochs_{epoch}_' + 
                              f'{datetime.now().strftime("%H_%M_%S")}.pt')
-    torch.save(checkpoint, savemodel)
+    torch.save(checkpoint, save_model)
 
 
 def load_checkpoint(model_cur, optimizer_cur, filename):
