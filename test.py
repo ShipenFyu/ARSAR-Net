@@ -6,7 +6,6 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 import matplotlib.pyplot as plt
-import h5py
 from datetime import datetime
 from tqdm import tqdm
 
@@ -31,37 +30,20 @@ args = parser.parse_args()
 network = args.network
 batch_size = args.batch_size
 
-device = torch.device(args.device_index if torch.cuda.is_available() else "cpu")
+device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 if platform.system() == 'Windows':
     num_workers = 0
 else:
     num_workers = 0  # workers error
 
-testing_image = 'Training_DataX.mat'
-with h5py.File('./%s/%s' % (args.tst_dataset, testing_image), 'r') as f:
-    image_labels = f['Training_DataX']
-    image_labels = np.transpose(image_labels, (2, 1, 0))[:8, :, :]  # 8 samples for test
-    real_part = image_labels['real']
-    imag_part = image_labels['imag']
+test_file_path = [os.path.join(args.tst_dataset, 'image_test.npy'), 
+                  os.path.join(args.tst_dataset, 'echo_test.npy')]
 
-    image_np = np.array(real_part, dtype=np.float32) + 1j * np.array(imag_part, dtype=np.float32)
-    image_labels_array = np.array(image_np, dtype=np.complex64)
+image_labels_array = np.load(test_file_path[0])
+echo_labels_array = np.load(test_file_path[1])
 
-    image_labels_tensor = torch.complex(torch.tensor(real_part, dtype=torch.float32), 
-                                        torch.tensor(imag_part, dtype=torch.float32)).to(device)
-
-testing_echo = 'Training_DataY.mat'
-with h5py.File('./%s/%s' % (args.tst_dataset, testing_echo), 'r') as f:
-    echo_labels = f['Training_DataY']
-    echo_labels = np.transpose(echo_labels, (2, 1, 0))[:8, :, :]
-    real_part = echo_labels['real']
-    imag_part = echo_labels['imag']
-
-    echo_np = np.array(real_part, dtype=np.float32) + 1j * np.array(imag_part, dtype=np.float32)
-    echo_labels_array = np.array(echo_np, dtype=np.complex64)
-
-    echo_labels_tensor = torch.complex(torch.tensor(real_part, dtype=torch.float32), 
-                                       torch.tensor(imag_part, dtype=torch.float32)).to(device)
+image_labels_tensor = torch.tensor(image_labels_array, dtype=torch.complex64).to(device)
+echo_labels_tensor = torch.tensor(echo_labels_array, dtype=torch.complex64).to(device)
 
 test_dataset = TensorDataset(image_labels_tensor, echo_labels_tensor)
 test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
@@ -136,7 +118,7 @@ def pre_process(rec, echo, img):
 
 def figure_generate(echo_norm, rec_norm, img_norm, rec_psnr, index):
     if len(index) == 1:
-        plt.figure(figsize=(20, 5))
+        plt.figure(figsize=(15, 5))
 
         plt.subplot(1, 3, 1)
         plt.imshow(echo_norm[index[0]], cmap="gray", origin="lower")
@@ -160,7 +142,7 @@ def figure_generate(echo_norm, rec_norm, img_norm, rec_psnr, index):
         plt.close()
     else:
         for num in index:
-            plt.figure(figsize=(20, 5))
+            plt.figure(figsize=(15, 5))
 
             plt.subplot(1, 3, 1)
             plt.imshow(echo_norm[num], cmap="gray", origin="lower")

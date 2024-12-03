@@ -7,7 +7,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
-import h5py
 from datetime import datetime
 import time
 from tqdm import tqdm
@@ -38,31 +37,17 @@ network = args.network
 epochs = args.epochs
 batch_size = args.batch_size
 
-device = torch.device(args.device_index if torch.cuda.is_available() else "cpu")
+device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 if platform.system() == 'Windows':
     num_workers = 0
 else:
     num_workers = 0  # workers error
 
-training_image = 'Training_DataX.mat'
-with h5py.File('./%s/%s' % (args.trn_dataset, training_image), 'r') as f:
-    image_labels = f['Training_DataX']
-    image_labels = np.transpose(image_labels, (2, 1, 0))[:512, :, :]  # we need only 512 samples here
-    real_part = image_labels['real']
-    imag_part = image_labels['imag']
+train_file_path = [os.path.join(args.trn_dataset, 'image_train.npy'), 
+                   os.path.join(args.trn_dataset, 'echo_train.npy')]
 
-    image_labels_tensor = torch.complex(torch.tensor(real_part, dtype=torch.float32), 
-                                            torch.tensor(imag_part, dtype=torch.float32)).to(device)
-
-training_echo = 'Training_DataY.mat'
-with h5py.File('./%s/%s' % (args.trn_dataset, training_echo), 'r') as f:
-    echo_labels = f['Training_DataY']
-    echo_labels = np.transpose(echo_labels, (2, 1, 0))[:512, :, :]
-    real_part = echo_labels['real']
-    imag_part = echo_labels['imag']
-
-    echo_labels_tensor = torch.complex(torch.tensor(real_part, dtype=torch.float32), 
-                                            torch.tensor(imag_part, dtype=torch.float32)).to(device)
+image_labels_tensor = torch.tensor(np.load(train_file_path[0]), dtype=torch.complex64).to(device)
+echo_labels_tensor = torch.tensor(np.load(train_file_path[1]), dtype=torch.complex64).to(device)
 
 train_dataset = TensorDataset(image_labels_tensor, echo_labels_tensor)
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
