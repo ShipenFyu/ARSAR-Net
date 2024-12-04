@@ -11,18 +11,18 @@ from tqdm import tqdm
 
 from utils.observation_matrix import get_ob_matrix
 from utils.evaluate import normalize, psnr_evaluate, ssim_evaluate
-from utils.config import device_index
+from utils.config import device_index, p
 from models.lr_net import ADMMIRNet
 from models.pnp_net import ADMMPnPNet
 
 
 parser = argparse.ArgumentParser(description='Implicit Regularization Testing')
 parser.add_argument('--tst_dataset', default='data', help='Testing dataset directory')
-parser.add_argument('--network', default='ir', help='Backbone network pnp or ir')
+parser.add_argument('--network', default='pnp', help='Backbone network pnp or ir')
 parser.add_argument('--batch_size', default=2, type=int, help='Batch size for testing')
 parser.add_argument('--layer_num', default=9, type=int, help='Net block num in iteration')
 parser.add_argument('--internal_iteration', default=6, type=int, help='ADMM-Net z block iteration num')
-parser.add_argument('--regularization', default='l1', help='The regularization type to PnP network')
+parser.add_argument('--regularization', default='tv', help='The regularization type to PnP network')
 parser.add_argument('--device', default=device_index, help='The regularization type to PnP network')
 
 args = parser.parse_args()
@@ -37,7 +37,7 @@ else:
     num_workers = 0  # workers error
 
 test_file_path = [os.path.join(args.tst_dataset, 'image_test.npy'), 
-                  os.path.join(args.tst_dataset, 'echo_test.npy')]
+                   os.path.join(args.tst_dataset, 'echo_test.npy')]
 
 image_labels_array = np.load(test_file_path[0])
 echo_labels_array = np.load(test_file_path[1])
@@ -49,7 +49,8 @@ test_dataset = TensorDataset(image_labels_tensor, echo_labels_tensor)
 test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
 print('DataLoader Finished!')
 
-right_matrix, left_matrix, operator = get_ob_matrix(batch_size)
+right_matrix, left_matrix = get_ob_matrix(batch_size)
+operator = p
 
 if network == 'ir':
     model = ADMMIRNet(
@@ -72,8 +73,8 @@ else:
     raise ValueError(f'unknown network name {network} found!')
 print('Model Initialized!')
 
-weights_dir = os.path.join('./weights', '2024_12_02')
-weight_path = os.path.join(weights_dir, 'weights_model_ir_epochs_18_00_04_33.pt')
+weights_dir = os.path.join('./weights', '2024_12_04')
+weight_path = os.path.join(weights_dir, 'weights_model_pnp_epochs_38_18_39_00.pt')
 
 model.load_state_dict(torch.load(weight_path)['model_state_dict'])
 model.eval()
@@ -117,8 +118,12 @@ def pre_process(rec, echo, img):
 
 
 def figure_generate(echo_norm, rec_norm, img_norm, rec_psnr, index):
+    save_dir = os.path.join('./images', args.regularization)
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
     if len(index) == 1:
-        plt.figure(figsize=(15, 5))
+        save_path = os.path.join(save_dir, f'figure_{1}.png')
+        plt.figure(figsize=(20, 5))
 
         plt.subplot(1, 3, 1)
         plt.imshow(echo_norm[index[0]], cmap="gray", origin="lower")
@@ -136,13 +141,12 @@ def figure_generate(echo_norm, rec_norm, img_norm, rec_psnr, index):
         plt.axis('off')
 
         plt.subplots_adjust(left=0, right=1, top=.95, bottom=0, wspace=0.01)
-        
-        save_path = f'./images/figure_{num}.png'
         plt.savefig(save_path, bbox_inches='tight')
         plt.close()
     else:
         for num in index:
-            plt.figure(figsize=(15, 5))
+            save_path = os.path.join(save_dir, f'figure_{num + 1}.png')
+            plt.figure(figsize=(20, 5))
 
             plt.subplot(1, 3, 1)
             plt.imshow(echo_norm[num], cmap="gray", origin="lower")
@@ -160,14 +164,13 @@ def figure_generate(echo_norm, rec_norm, img_norm, rec_psnr, index):
             plt.axis('off')
 
             plt.subplots_adjust(left=0, right=1, top=.95, bottom=0, wspace=0.01)
-            
-            save_path = f'./images/figure_{num}.png'
             plt.savefig(save_path, bbox_inches='tight')
             plt.close()
 
 
 if __name__ == '__main__':
-    index = [i for i in range(8)]
+    # index = [i for i in range(8)]
+    index = [4] 
     rec = test()
     echo_norm, rec_norm, img_norm, rec_psnr = pre_process(rec, echo_labels_array, 
                                                           image_labels_array)

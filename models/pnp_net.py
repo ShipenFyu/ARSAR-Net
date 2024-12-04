@@ -1,6 +1,7 @@
 import torch
 import torchpwl
 import torch.nn as nn
+from torch.fft import fft, ifft, fftshift, ifftshift
 
 from utils.config import device_index
 
@@ -126,18 +127,26 @@ class ReconstructionLayer(nn.Module):
         coffe_matrix_right = Phi_fast_a + identity_right
         coffe_matrix_left = Phi_slow_a + identity_left
         
-        self.Phi_fast_H = Phi_fast_H
-        self.Phi_slow_H = Phi_slow_H
         self.inverse_matrix_right = torch.inverse(coffe_matrix_right)
         self.inverse_matrix_left = torch.inverse(coffe_matrix_left)        
 
+    def I_strip(self, echo):
+        echo_fr = fftshift(fft(echo, dim=1), dim=1)
+        echo_fr = echo_fr * self.operator['sc'].to(device)
+        echo_fra = fftshift(fft(echo_fr, dim=2), dim=2)
+        echo_fra = echo_fra * self.operator['rc'].to(device)
+        echo_fr = ifft(ifftshift(echo_fra, dim=2), dim=2)
+        echo_fr = echo_fr * self.operator['ac'].to(device)
+        image = ifft(ifftshift(echo_fr, dim=1), dim=1)
+        return image
+
     def forward(self, input, z, beta):
-        trivial_value = torch.matmul(torch.matmul(self.Phi_slow_H, input), self.Phi_fast_H)
+        trivial_value = self.I_strip(input)
         if self.is_first:
             value = torch.zeros_like(trivial_value, device=device_index)  # initialize
         else:
             value = torch.sub(z, beta)
-        mid_value = trivial_value * self.operator + self.rho * value
+        mid_value = trivial_value + self.rho * value
 
         return torch.matmul(torch.matmul(self.inverse_matrix_left, mid_value), self.inverse_matrix_right)
 

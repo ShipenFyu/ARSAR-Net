@@ -12,7 +12,7 @@ import time
 from tqdm import tqdm
 
 from utils.observation_matrix import get_ob_matrix
-from utils.config import device_index
+from utils.config import device_index, p
 from models.lr_net import ADMMIRNet
 from models.pnp_net import ADMMPnPNet
 from logs.log_utils import configure_logging, log_training_info
@@ -20,7 +20,7 @@ from logs.log_utils import configure_logging, log_training_info
 
 parser = argparse.ArgumentParser(description='Implicit Regularization Training')
 parser.add_argument('--trn_dataset', default='data', help='Training dataset directory')
-parser.add_argument('--network', default='ir', help='Backbone network pnp or ir')
+parser.add_argument('--network', default='pnp', help='Backbone network pnp or ir')
 parser.add_argument('--epochs', default=40, type=int, help='Epochs')
 parser.add_argument('--nsave', default=2, help='Save model after every nSave epoch')
 parser.add_argument('--batch_size', default=2, type=int, help='Batch size for training')
@@ -57,7 +57,8 @@ weights_dir = os.path.join('./weights', datetime.now().strftime("%Y_%m_%d"))
 if not os.path.exists(weights_dir):
     os.makedirs(weights_dir)
 
-right_matrix, left_matrix, operator = get_ob_matrix(batch_size)
+right_matrix, left_matrix= get_ob_matrix(batch_size)
+operator = p
 
 if network == 'ir':
     model = ADMMIRNet(

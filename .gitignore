@@ -18,3 +18,7 @@ weights/*
 
 # exam.py
 exam.py
+
+# images
+images/*
+!images/

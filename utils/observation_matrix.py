@@ -28,7 +28,4 @@ def get_ob_matrix(batch_size):
     Phi_fast = torch.matmul(Ah_fast, Aht_fast).expand(batch_size, -1, -1).to(device)
     Phi_slow = torch.matmul(Aht_slow, Ah_slow).expand(batch_size, -1, -1).to(device)
 
-    operator = torch.conj(p['ac']) * torch.conj(p['rc']) * torch.conj(p['sc'])
-    operator = operator.to(torch.complex64)
-
-    return Phi_fast, Phi_slow, operator.to(device)
+    return Phi_fast, Phi_slow

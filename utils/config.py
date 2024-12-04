@@ -47,10 +47,10 @@ Km = Kr / (1 - Kr * C * Rgroup * Fal**2 / (2 * Vs**2 * Fc**3 * D_f_eta**3))
 Dref = np.sqrt(1 - Lambda**2 * Fdc**2 / 4 / Vs**2)
 
 sc = np.exp(1j * np.pi * Km * (Dref / D_f_eta - 1) * (Trl - 2 * Rref / C / D_f_eta)**2)
-sc = torch.from_numpy(sc)
+sc = torch.tensor(sc, dtype=torch.complex64)
 rc = np.exp(1j * np.pi * D_f_eta * Frl**2 / Km / Dref + 1j * 4 * np.pi * (1 / D_f_eta - 1 / Dref) * Rref * Frl / C)
-rc = torch.from_numpy(rc)
+rc = torch.tensor(rc, dtype=torch.complex64)
 ac = np.exp(1j * 4 * np.pi * Rgroup / Lambda * D_f_eta - 1j * 4 * np.pi * Km / C**2 * (1 - D_f_eta / Dref) * (Rgroup / D_f_eta - Rref / D_f_eta)**2)
-ac = torch.from_numpy(ac)
+ac = torch.tensor(ac, dtype=torch.complex64)
 
 p = {'sc': sc, 'rc': rc, 'ac': ac}
