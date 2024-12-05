@@ -1,6 +1,7 @@
 import torch
 import torchpwl
 import torch.nn as nn
+from torch.fft import fft, ifft, fftshift, ifftshift
 
 from utils.config import device_index
 
@@ -10,8 +11,6 @@ device = torch.device(device_index if torch.cuda.is_available() else "cpu")
 class ADMMIRNet(nn.Module):
     def __init__(
         self, 
-        ob_matrix_left,
-        ob_matrix_right,
         operator,
         num_phase,
         iteration,
@@ -24,15 +23,13 @@ class ADMMIRNet(nn.Module):
         self.rho = nn.Parameter(torch.tensor([0.1]), requires_grad=True)
         self.eta = nn.Parameter(torch.tensor([1.0]), requires_grad=True)
 
-        self.reconstruction_start = ReconstructionLayer(self.rho, ob_matrix_right, 
-                                                        ob_matrix_left, operator, is_first=True)
-        self.reconstruction_end = ReconstructionLayer(self.rho, ob_matrix_right, 
-                                                      ob_matrix_left, operator, is_first=False)
+        self.reconstruction_start = ReconstructionLayer(self.rho, operator, is_first=True)
+        self.reconstruction_end = ReconstructionLayer(self.rho, operator, is_first=False)
         self.multiple = MultipleLayer(self.eta, is_first=True)
         layers = []
 
         for _ in range(num_phase):
-            layers.append(BasicBlock(ob_matrix_right, ob_matrix_left, operator, in_channels, out_channels, 
+            layers.append(BasicBlock(operator, in_channels, out_channels, 
                                      kernel_size, num_breakpoints, iteration, self.rho, self.eta))
         
         self.iteration_net = nn.Sequential(*layers)
@@ -59,10 +56,10 @@ class ADMMIRNet(nn.Module):
 
 
 class BasicBlock(nn.Module):
-    def __init__(self, ob_matrix_right, ob_matrix_left, operator, in_channels, out_channels, 
+    def __init__(self, operator, in_channels, out_channels, 
                  kernel_size, num_breakpoints, iteration, rho, eta):
         super(BasicBlock, self).__init__()
-        self.reconstruction = ReconstructionLayer(rho, ob_matrix_right, ob_matrix_left, operator)
+        self.reconstruction = ReconstructionLayer(rho, operator)
         self.multiple = MultipleLayer(eta)
         self.recurrent = RecurrentBlock(in_channels, out_channels, kernel_size, 
                                         num_breakpoints, iteration)
@@ -85,7 +82,63 @@ class BasicBlock(nn.Module):
         return input_dict
 
 
+class ReconstructionLayer(nn.Module):
+    def __init__(self, rho, operator, is_first=False):
+        super(ReconstructionLayer, self).__init__()
+        self.rho = rho
+        self.operator = operator
+        self.is_first = is_first     
+
+    def G_strip(self, img):
+        img_fr = fftshift(fft(img, dim=1), dim=1)
+        img_fr = img_fr * torch.conj(self.operator['ac']).to(device)
+        img_fra = fftshift(fft(img_fr, dim=2), dim=2)
+        img_fra = img_fra * torch.conj(self.operator['rc']).to(device)
+        img_fr = ifft(ifftshift(img_fra, dim=2), dim=2)
+        img_fr = img_fr * torch.conj(self.operator['sc']).to(device)
+        echo = ifft(ifftshift(img_fr, dim=1), dim=1)
+        return echo
+    
+    def I_strip(self, echo):
+        echo_fr = fftshift(fft(echo, dim=1), dim=1)
+        echo_fr = echo_fr * self.operator['sc'].to(device)
+        echo_fra = fftshift(fft(echo_fr, dim=2), dim=2)
+        echo_fra = echo_fra * self.operator['rc'].to(device)
+        echo_fr = ifft(ifftshift(echo_fra, dim=2), dim=2)
+        echo_fr = echo_fr * self.operator['ac'].to(device)
+        image = ifft(ifftshift(echo_fr, dim=1), dim=1)
+        return image
+
+    def forward(self, input, z, beta):
+        if self.is_first:
+            trivial_value = self.I_strip(input)  # initialize
+
+            return trivial_value
+        else:
+            iter_value = self.G_strip(self.rho * torch.sub(z, beta))
+            iter_echo = torch.add(input, iter_value)
+            trivial_value = self.I_strip(iter_echo)
+
+            return trivial_value
+
+
+class MultipleLayer(nn.Module):
+    def __init__(self, eta, is_first=False):
+        super(MultipleLayer, self).__init__()
+        self.eta = eta
+        self.is_first = is_first
+
+    def forward(self, beta, x, z):
+        if self.is_first:
+            return torch.zeros_like(x, device=device_index)  # initialize
+        else:
+            return torch.add(beta, self.eta * torch.sub(x, z))
+
+
 class RecurrentBlock(nn.Module):
+    '''
+    Cited from: "ADMM-CSNet: A Deep Learning Approach for Image Compressive Sensing"
+    '''
     def __init__(self, in_channels, out_channels, kernel_size, num_breakpoints, iteration):
         super(RecurrentBlock, self).__init__()
         self.iteration = iteration
@@ -118,54 +171,6 @@ class RecurrentBlock(nn.Module):
             z = self.additional(z, conv2_shaped, x, beta)
         
         return z
-
-
-class ReconstructionLayer(nn.Module):
-    def __init__(self, rho, Phi_fast, Phi_slow, operator, is_first=False):
-        super(ReconstructionLayer, self).__init__()
-        self.rho = rho
-        self.operator = operator
-        self.is_first = is_first
-
-        Phi_fast_H = Phi_fast.conj().permute(0, 2, 1)
-        Phi_slow_H = Phi_slow.conj().permute(0, 2, 1)
-        Phi_fast_a = torch.matmul(Phi_fast, Phi_fast_H)
-        Phi_slow_a = torch.matmul(Phi_slow_H, Phi_slow)
-
-        rho_detached = self.rho.detach()  # it's ok?
-        
-        identity_right = rho_detached.to(device) * torch.eye(Phi_fast_a.shape[1]).expand(Phi_fast_a.shape[0], -1, -1).to(device)
-        identity_left = rho_detached.to(device) * torch.eye(Phi_slow_a.shape[1]).expand(Phi_slow_a.shape[0], -1, -1).to(device)
-        coffe_matrix_right = Phi_fast_a + identity_right
-        coffe_matrix_left = Phi_slow_a + identity_left
-        
-        self.Phi_fast_H = Phi_fast_H
-        self.Phi_slow_H = Phi_slow_H
-        self.inverse_matrix_right = torch.inverse(coffe_matrix_right)
-        self.inverse_matrix_left = torch.inverse(coffe_matrix_left)        
-
-    def forward(self, input, z, beta):
-        trivial_value = torch.matmul(torch.matmul(self.Phi_slow_H, input), self.Phi_fast_H)
-        if self.is_first:
-            value = torch.zeros_like(trivial_value, device=device_index)  # initialize
-        else:
-            value = torch.sub(z, beta)
-        mid_value = trivial_value * self.operator + self.rho * value
-
-        return torch.matmul(torch.matmul(self.inverse_matrix_left, mid_value), self.inverse_matrix_right)
-
-
-class MultipleLayer(nn.Module):
-    def __init__(self, eta, is_first=False):
-        super(MultipleLayer, self).__init__()
-        self.eta = eta
-        self.is_first = is_first
-
-    def forward(self, beta, x, z):
-        if self.is_first:
-            return torch.zeros_like(x, device=device_index)  # initialize
-        else:
-            return torch.add(beta, self.eta * torch.sub(x, z))
     
 
 class ConvolutionNormalLayer(nn.Module):
@@ -229,4 +234,3 @@ class AdditionalLayer(nn.Module):
         else:
             mid_value = torch.add(self.miu_1 * z, self.miu_2 * variables)
             return torch.sub(mid_value, c)
-    

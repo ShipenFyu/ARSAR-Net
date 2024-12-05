@@ -23,8 +23,7 @@ exam.py
 images/*
 !images/
 
-# markdown
+# markdown and pdf
+summary/
 *.md
-
-# pdf
 *.pdf

@@ -12,7 +12,7 @@ from tqdm import tqdm
 from utils.observation_matrix import get_ob_matrix
 from utils.evaluate import normalize, psnr_evaluate, ssim_evaluate
 from utils.config import device_index, p
-from models.lr_net import ADMMIRNet
+from models.ir_net import ADMMIRNet
 from models.pnp_net import ADMMPnPNet
 
 
@@ -22,7 +22,7 @@ parser.add_argument('--network', default='pnp', help='Backbone network pnp or ir
 parser.add_argument('--batch_size', default=2, type=int, help='Batch size for testing')
 parser.add_argument('--layer_num', default=9, type=int, help='Net block num in iteration')
 parser.add_argument('--internal_iteration', default=6, type=int, help='ADMM-Net z block iteration num')
-parser.add_argument('--regularization', default='lr', help='The regularization type to PnP network')
+parser.add_argument('--regularization', default='ir', help='The regularization type to PnP network')
 parser.add_argument('--device', default=device_index, help='The regularization type to PnP network')
 
 args = parser.parse_args()
@@ -54,8 +54,6 @@ operator = p
 
 if network == 'ir':
     model = ADMMIRNet(
-        left_matrix, 
-        right_matrix, 
         operator, 
         args.layer_num, 
         args.internal_iteration,

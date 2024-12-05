@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from utils.observation_matrix import get_ob_matrix
 from utils.config import device_index, p
-from models.lr_net import ADMMIRNet
+from models.ir_net import ADMMIRNet
 from models.pnp_net import ADMMPnPNet
 from logs.log_utils import configure_logging, log_training_info
 
@@ -28,7 +28,7 @@ parser.add_argument('--lr', default=5e-4, type=float, help='Initial learning rat
 parser.add_argument('--layer_num', default=9, type=int, help='Net block num in iteration')
 parser.add_argument('--internal_iteration', default=6, type=int, help='ADMM-Net z block iteration num')
 parser.add_argument('--checkpoint', default=None, help='Continue model training')
-parser.add_argument('--regularization', default='l1', help='The regularization type to PnP network')
+parser.add_argument('--regularization', default='ir', help='The regularization type to PnP network')
 parser.add_argument('--device', default=device_index, help='The regularization type to PnP network')
 
 args = parser.parse_args()
@@ -61,9 +61,7 @@ right_matrix, left_matrix= get_ob_matrix(batch_size)
 operator = p
 
 if network == 'ir':
-    model = ADMMIRNet(
-        left_matrix, 
-        right_matrix, 
+    model = ADMMIRNet( 
         operator, 
         args.layer_num, 
         args.internal_iteration,

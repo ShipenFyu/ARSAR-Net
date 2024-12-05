@@ -76,7 +76,7 @@ class BasicBlock(nn.Module):
             eta,
             ):
         super(BasicBlock, self).__init__()
-        regularization = {'l1': SoftThresLayer, 'tv': TotalVarLayer, 'lr': RecurrentBlock}
+        regularization = {'l1': SoftThresLayer, 'tv': TotalVarLayer, 'ir': RecurrentBlock}
 
         self.reconstruction = ReconstructionLayer(rho, ob_matrix_right, ob_matrix_left, operator)
         self.multiple = MultipleLayer(eta)
@@ -85,7 +85,7 @@ class BasicBlock(nn.Module):
             self.regular_layer = regularization[regular]()
         elif regular == 'tv':
             self.regular_layer = regularization[regular](iteration)
-        elif regular == 'lr':
+        elif regular == 'ir':
             self.regular_layer = regularization[regular](in_channels, out_channels, kernel_size, 
                                                          num_breakpoints, iteration)
         else:
