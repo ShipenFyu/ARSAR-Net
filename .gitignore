@@ -22,3 +22,9 @@ exam.py
 # images
 images/*
 !images/
+
+# markdown
+*.md
+
+# pdf
+*.pdf

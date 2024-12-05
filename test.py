@@ -22,7 +22,7 @@ parser.add_argument('--network', default='pnp', help='Backbone network pnp or ir
 parser.add_argument('--batch_size', default=2, type=int, help='Batch size for testing')
 parser.add_argument('--layer_num', default=9, type=int, help='Net block num in iteration')
 parser.add_argument('--internal_iteration', default=6, type=int, help='ADMM-Net z block iteration num')
-parser.add_argument('--regularization', default='tv', help='The regularization type to PnP network')
+parser.add_argument('--regularization', default='lr', help='The regularization type to PnP network')
 parser.add_argument('--device', default=device_index, help='The regularization type to PnP network')
 
 args = parser.parse_args()
@@ -46,7 +46,7 @@ image_labels_tensor = torch.tensor(image_labels_array, dtype=torch.complex64).to
 echo_labels_tensor = torch.tensor(echo_labels_array, dtype=torch.complex64).to(device)
 
 test_dataset = TensorDataset(image_labels_tensor, echo_labels_tensor)
-test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 print('DataLoader Finished!')
 
 right_matrix, left_matrix = get_ob_matrix(batch_size)
@@ -73,8 +73,8 @@ else:
     raise ValueError(f'unknown network name {network} found!')
 print('Model Initialized!')
 
-weights_dir = os.path.join('./weights', '2024_12_04')
-weight_path = os.path.join(weights_dir, 'weights_model_pnp_epochs_38_18_39_00.pt')
+split_path = '/home/FuShiping/ADMM-IR/weights/2024_12_04/weights_model_pnp_epochs_40_13_40_20.pt'.split('/')[-3:]
+weight_path = os.path.join(split_path[0], split_path[1], split_path[2])
 
 model.load_state_dict(torch.load(weight_path)['model_state_dict'])
 model.eval()
@@ -169,8 +169,8 @@ def figure_generate(echo_norm, rec_norm, img_norm, rec_psnr, index):
 
 
 if __name__ == '__main__':
-    # index = [i for i in range(8)]
-    index = [4] 
+    index = [i for i in range(8)]
+    # index = [4] 
     rec = test()
     echo_norm, rec_norm, img_norm, rec_psnr = pre_process(rec, echo_labels_array, 
                                                           image_labels_array)
