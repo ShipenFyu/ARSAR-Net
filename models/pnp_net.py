@@ -1,6 +1,7 @@
 import torch
 import torchpwl
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.fft import fft, ifft, fftshift, ifftshift
 
 from utils.config import device_index
@@ -19,6 +20,7 @@ class ADMMPnPNet(nn.Module):
         regular,
         in_channels = 1,
         out_channels = 32,
+        base_channels = 16,
         kernel_size = 3, 
         num_breakpoints = 60,
         ):
@@ -35,7 +37,7 @@ class ADMMPnPNet(nn.Module):
 
         for _ in range(num_phase):
             layers.append(BasicBlock(ob_matrix_right, ob_matrix_left, operator, regular, in_channels, out_channels, 
-                                     kernel_size, num_breakpoints, iteration, self.rho, self.eta))
+                                     base_channels, kernel_size, num_breakpoints, iteration, self.rho, self.eta))
         
         self.iteration_net = nn.Sequential(*layers)
     
@@ -68,7 +70,8 @@ class BasicBlock(nn.Module):
             operator, 
             regular, 
             in_channels, 
-            out_channels, 
+            out_channels,
+            base_channels, 
             kernel_size, 
             num_breakpoints, 
             iteration, 
@@ -76,7 +79,8 @@ class BasicBlock(nn.Module):
             eta,
             ):
         super(BasicBlock, self).__init__()
-        regularization = {'l1': SoftThresLayer, 'tv': TotalVarLayer, 'ir': RecurrentBlock}
+        regularization = {'l1': SoftThresLayer, 'tv': TotalVarLayer, 
+                          'ir': RecurrentBlock, 'unet': UnetUpdateLayer}
 
         self.reconstruction = ReconstructionLayer(rho, ob_matrix_right, ob_matrix_left, operator)
         self.multiple = MultipleLayer(eta)
@@ -88,6 +92,9 @@ class BasicBlock(nn.Module):
         elif regular == 'ir':
             self.regular_layer = regularization[regular](in_channels, out_channels, kernel_size, 
                                                          num_breakpoints, iteration)
+        elif regular == 'unet':
+            self.regular_layer = regularization[regular](in_channels, base_channels, kernel_size, 
+                                                         iteration)
         else:
             raise ValueError(f'unknown regularization {regular} found!')
     
@@ -234,6 +241,23 @@ class TotalVarLayer(nn.Module):
         return z
 
 
+class AdditionalLayer(nn.Module):
+    def __init__(self, miu_1, miu_2, is_first=False):
+        super(AdditionalLayer, self).__init__()
+        self.miu_1 = miu_1
+        self.miu_2 = miu_2
+        self.is_first = is_first
+    
+    def forward(self, z, c, x, beta):
+        variables = torch.add(x, beta)
+
+        if self.is_first:
+            return variables
+        else:
+            mid_value = torch.add(self.miu_1 * z, self.miu_2 * variables)
+            return torch.sub(mid_value, c)
+        
+
 class RecurrentBlock(nn.Module):
     '''
     Cited from: "ADMM-CSNet: A Deep Learning Approach for Image Compressive Sensing"
@@ -318,19 +342,103 @@ class NonLinearLayer(nn.Module):
         return torch.complex(real_part, imag_part)
 
 
-class AdditionalLayer(nn.Module):
-    def __init__(self, miu_1, miu_2, is_first=False):
-        super(AdditionalLayer, self).__init__()
-        self.miu_1 = miu_1
-        self.miu_2 = miu_2
-        self.is_first = is_first
+class UnetUpdateLayer(nn.Module):
+    '''
+    Unet structure for z updating
+    '''
+    def __init__(self, in_channels, base_channels, kernel_size, iteration):
+        super(UnetUpdateLayer, self).__init__()
     
-    def forward(self, z, c, x, beta):
-        variables = torch.add(x, beta)
+        self.iteration = iteration
 
-        if self.is_first:
-            return variables
-        else:
-            mid_value = torch.add(self.miu_1 * z, self.miu_2 * variables)
-            return torch.sub(mid_value, c)
+        self.miu_1 = nn.Parameter(torch.tensor([0.5]), requires_grad=True)
+        self.miu_2 = nn.Parameter(torch.tensor([0.5]), requires_grad=True)
+
+        self.unet = UnetLayer(in_channels, base_channels, kernel_size)
+        self.additional_start = AdditionalLayer(self.miu_1, self.miu_2, is_first=True)
+        self.additional = AdditionalLayer(self.miu_1, self.miu_2)
+
+    def forward(self, x, beta):
+        z = self.additional_start(0, 0, x, beta)  # initialize
+
+        for _ in range(self.iteration):
+            z_channeled = torch.unsqueeze(z, 1)
+            unet_out = self.unet(z_channeled)
+            unet_shaped = torch.squeeze(unet_out, 1)
+            z = self.additional(z, unet_shaped, x, beta)
+        
+        return z
+
+class UnetLayer(nn.Module):
+    def __init__(self, in_channels, base_channels, kernel_size):
+        super(UnetLayer, self).__init__()
+        self.encoder1 = ConvLayer(in_channels, base_channels, kernel_size)
+        self.encoder2 = ConvLayer(base_channels, base_channels * 2, kernel_size)
+        self.encoder3 = ConvLayer(base_channels * 2, base_channels * 4, kernel_size)
+
+        self.center = ConvLayer(base_channels * 4, base_channels * 4, kernel_size)
+
+        self.decoder3 = ConvLayer(base_channels * 8, base_channels * 2, kernel_size)
+        self.decoder2 = ConvLayer(base_channels * 4, base_channels, kernel_size)
+        self.decoder1 = ConvLayer(base_channels * 2, base_channels, kernel_size)
+
+        self.out = nn.Conv2d(base_channels, in_channels, kernel_size=1)
+
+    def average_pooling(self, encoder, kernel_size=2):
+        encoder_real = F.avg_pool2d(encoder.real, kernel_size)
+        encoder_imag = F.avg_pool2d(encoder.imag, kernel_size)
+
+        return torch.complex(encoder_real, encoder_imag)
     
+    def interpolate(self, decoder, scale_factor):
+        decoder_real = F.interpolate(decoder.real, scale_factor=scale_factor, 
+                                     mode='bilinear', align_corners=True)
+        decoder_imag = F.interpolate(decoder.imag, scale_factor=scale_factor, 
+                                     mode='bilinear', align_corners=True)
+        
+        return torch.complex(decoder_real, decoder_imag)
+
+    def forward(self, z):
+        enc1 = self.encoder1(z)
+        enc2 = self.encoder2(self.average_pooling(enc1, 2))
+        enc3 = self.encoder3(self.average_pooling(enc2, 2))
+
+        center = self.center(self.average_pooling(enc3, 2))
+
+        dec3 = self.decoder3(torch.cat([self.interpolate(center, scale_factor=2), enc3], 1))
+        dec2 = self.decoder2(torch.cat([self.interpolate(dec3, scale_factor=2), enc2], 1))
+        dec1 = self.decoder1(torch.cat([self.interpolate(dec2, scale_factor=2), enc1], 1))
+        output_real = self.out(dec1.real)
+        output_imag = self.out(dec1.imag)
+
+        return torch.complex(output_real, output_imag)
+    
+
+class ConvLayer(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size):
+        super(ConvLayer, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size, 
+                               padding=int((kernel_size - 1) / 2))
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.relu1 = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size, 
+                               padding=int((kernel_size - 1) / 2))
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        self.relu2 = nn.ReLU(inplace=True)
+
+    def forward(self, z):
+        real_conv1 = self.conv1(z.real)
+        imag_conv1 = self.conv1(z.imag)
+        real_bn1 = self.bn1(real_conv1)
+        imag_bn1 = self.bn1(imag_conv1)
+        real_relu1 = self.relu1(real_bn1)
+        imag_relu1 = self.relu1(imag_bn1)
+
+        real_conv2 = self.conv2(real_relu1)
+        imag_conv2 = self.conv2(imag_relu1)
+        real_bn2 = self.bn2(real_conv2)
+        imag_bn2 = self.bn2(imag_conv2)
+        real_relu2 = self.relu2(real_bn2)
+        imag_relu2 = self.relu2(imag_bn2)
+
+        return torch.complex(real_relu2, imag_relu2)

@@ -128,6 +128,7 @@ def train(checkpoint=None):
     log_training_info(logger, 'Platform: {}'.format(platform.system()))
     log_training_info(logger, f"Parameters: Epochs: {epochs}, Batch Size: {batch_size},"
                               f" Learning Rate: {args.lr}, Regularization: {args.regularization}")
+    log_training_info(logger, f"Layer_num: {args.layer_num}, Internal_iteration: {args.internal_iteration}")
     start_time = time.time()
     print('Training started at', datetime.now().strftime("%Y %m %d-%H:%M:%S"))
 
