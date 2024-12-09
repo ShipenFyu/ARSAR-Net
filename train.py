@@ -28,7 +28,7 @@ parser.add_argument('--lr', default=5e-4, type=float, help='Initial learning rat
 parser.add_argument('--layer_num', default=9, type=int, help='Net block num in iteration')
 parser.add_argument('--internal_iteration', default=6, type=int, help='ADMM-Net z block iteration num')
 parser.add_argument('--checkpoint', default=None, help='Continue model training')
-parser.add_argument('--regularization', default='ir', help='The regularization type to PnP network')
+parser.add_argument('--regularization', default='unet', help='The regularization type to PnP network')
 parser.add_argument('--device', default=device_index, help='The regularization type to PnP network')
 
 args = parser.parse_args()
@@ -49,8 +49,15 @@ train_file_path = [os.path.join(args.trn_dataset, 'image_train.npy'),
 image_labels_tensor = torch.tensor(np.load(train_file_path[0]), dtype=torch.complex64).to(device)
 echo_labels_tensor = torch.tensor(np.load(train_file_path[1]), dtype=torch.complex64).to(device)
 
+validation_indices = torch.randperm(image_labels_tensor.size(0))[:128]
+validation_image = image_labels_tensor[validation_indices]
+validation_echo = echo_labels_tensor[validation_indices]
+
 train_dataset = TensorDataset(image_labels_tensor, echo_labels_tensor)
+validation_dataset = TensorDataset(validation_image, validation_echo)
+
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+val_loader = DataLoader(validation_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 print('DataLoader Finished!')
 
 weights_dir = os.path.join('./weights', datetime.now().strftime("%Y_%m_%d"))
@@ -137,8 +144,9 @@ def train(checkpoint=None):
         if os.path.isfile(checkpoint):
             start_epoch = load_checkpoint(model, optimizer, checkpoint)
     
-    model.train()
+    best_val_loss = float('inf')
     for epoch in range(start_epoch, epochs):
+        model.train()
         epoch_loss = []
         for clip in tqdm(train_loader, desc=f'Training Epoch: [{epoch + 1}/{epochs}]'):
             image, echo = clip[0].to(device), clip[1].to(device)
@@ -152,11 +160,28 @@ def train(checkpoint=None):
             epoch_loss.append(loss.item())
 
         avgTrnLoss = np.mean(epoch_loss)
-        print(f'Loss: {avgTrnLoss:.6f}')
-        log_training_info(logger, f'Epoch [{epoch + 1}/{args.epochs}], Loss: {avgTrnLoss:.6f}')
+        print(f'Training Loss: {avgTrnLoss:.6f}')
+        log_training_info(logger, f'Epoch [{epoch + 1}/{args.epochs}], Training Loss: {avgTrnLoss:.6f}')
 
-        if (epoch + 1) % args.nsave == 0:
-            save_checkpoint(model, optimizer, epoch + 1, avgTrnLoss)
+        model.eval()
+        val_loss = []
+        with torch.no_grad():
+            for clip in tqdm(val_loader, desc=f'Validation Epoch: [{epoch + 1}/{epochs}]'):
+                image, echo = clip[0].to(device), clip[1].to(device)
+                output = model(echo)
+                loss = criterion(output, image)
+                val_loss.append(loss.item())
+
+        avgValLoss = np.mean(val_loss)
+        print(f'Validation Loss: {avgValLoss:.6f}')
+        log_training_info(logger, f'Epoch [{epoch + 1}/{args.epochs}], Validation Loss: {avgValLoss:.6f}')
+
+        if avgValLoss < best_val_loss:
+            best_val_loss = avgValLoss
+            if (epoch + 1) % args.nsave == 0:
+                print(f'Saving model with improved validation loss: {best_val_loss:.6f}')
+                log_training_info(logger, f'Saving model with improved validation loss: {best_val_loss:.6f}')
+                save_checkpoint(model, optimizer, epoch + 1, avgTrnLoss)
 
     end_time = time.time()
     print('Training completed in minutes', (end_time - start_time) / 60)
