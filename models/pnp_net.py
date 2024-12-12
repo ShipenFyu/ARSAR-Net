@@ -12,7 +12,8 @@ device = torch.device(device_index if torch.cuda.is_available() else "cpu")
 class ADMMPnPNet(nn.Module):
     def __init__(
         self, 
-        kron_matrix,
+        ob_matrix_left,
+        ob_matrix_right,
         operator,
         num_phase,
         iteration,
@@ -27,16 +28,16 @@ class ADMMPnPNet(nn.Module):
         self.rho = nn.Parameter(torch.tensor([0.1]), requires_grad=True)
         self.eta = nn.Parameter(torch.tensor([1.0]), requires_grad=True)
 
-        self.reconstruction_start = ReconstructionLayer(self.rho, kron_matrix, operator, is_first=True)
-        self.reconstruction_end = ReconstructionLayer(self.rho, kron_matrix, operator, is_first=False)
+        self.reconstruction_start = ReconstructionLayer(self.rho, ob_matrix_right, 
+                                                        ob_matrix_left, operator, is_first=True)
+        self.reconstruction_end = ReconstructionLayer(self.rho, ob_matrix_right, 
+                                                      ob_matrix_left, operator, is_first=False)
         self.multiple = MultipleLayer(self.eta, is_first=True)
         layers = []
 
         for _ in range(num_phase):
-            layers.append(BasicBlock(kron_matrix, operator, 
-                                     regular, in_channels, out_channels, 
-                                     base_channels, kernel_size, num_breakpoints, 
-                                     iteration, self.rho, self.eta))
+            layers.append(BasicBlock(ob_matrix_right, ob_matrix_left, operator, regular, in_channels, out_channels, 
+                                     base_channels, kernel_size, num_breakpoints, iteration, self.rho, self.eta))
         
         self.iteration_net = nn.Sequential(*layers)
     
@@ -64,7 +65,8 @@ class ADMMPnPNet(nn.Module):
 class BasicBlock(nn.Module):
     def __init__(
             self, 
-            kron_matrix, 
+            ob_matrix_right, 
+            ob_matrix_left, 
             operator, 
             regular, 
             in_channels, 
@@ -80,7 +82,7 @@ class BasicBlock(nn.Module):
         regularization = {'l1': SoftThresLayer, 'tv': TotalVarLayer, 
                           'ir': RecurrentBlock, 'unet': UnetUpdateLayer}
 
-        self.reconstruction = ReconstructionLayer(rho, kron_matrix, operator)
+        self.reconstruction = ReconstructionLayer(rho, ob_matrix_right, ob_matrix_left, operator)
         self.multiple = MultipleLayer(eta)
 
         if regular == 'l1':
@@ -114,19 +116,26 @@ class BasicBlock(nn.Module):
 
 
 class ReconstructionLayer(nn.Module):
-    def __init__(self, rho, kron_matrix, operator, is_first=False):
+    def __init__(self, rho, Phi_fast, Phi_slow, operator, is_first=False):
         super(ReconstructionLayer, self).__init__()
         self.rho = rho
         self.operator = operator
         self.is_first = is_first
 
+        Phi_fast_H = Phi_fast.conj().permute(0, 2, 1)
+        Phi_slow_H = Phi_slow.conj().permute(0, 2, 1)
+        Phi_fast_a = torch.matmul(Phi_fast, Phi_fast_H)
+        Phi_slow_a = torch.matmul(Phi_slow_H, Phi_slow)
+
         rho_detached = self.rho.detach()  # it's ok?
         
-        identity = rho_detached.to(device) * torch.eye(kron_matrix.shape[1]).expand(kron_matrix.shape[0],
-                                                                                          -1, -1).to(device)
-        coffe_matrix = kron_matrix + identity
+        identity_right = rho_detached.to(device) * torch.eye(Phi_fast_a.shape[1]).expand(Phi_fast_a.shape[0], -1, -1).to(device)
+        identity_left = rho_detached.to(device) * torch.eye(Phi_slow_a.shape[1]).expand(Phi_slow_a.shape[0], -1, -1).to(device)
+        coffe_matrix_right = Phi_fast_a + identity_right
+        coffe_matrix_left = Phi_slow_a + identity_left
         
-        self.inverse_matrix = torch.inverse(coffe_matrix)        
+        self.inverse_matrix_right = torch.inverse(coffe_matrix_right)
+        self.inverse_matrix_left = torch.inverse(coffe_matrix_left)        
 
     def I_strip(self, echo):
         echo_fr = fftshift(fft(echo, dim=1), dim=1)
@@ -146,11 +155,7 @@ class ReconstructionLayer(nn.Module):
             value = torch.sub(z, beta)
         mid_value = trivial_value + self.rho * value
 
-        B, H, W = mid_value.shape
-
-        kron_product = torch.matmul(self.inverse_matrix, mid_value.view(B, -1, 1))
-
-        return kron_product.view(B, H, W)
+        return torch.matmul(torch.matmul(self.inverse_matrix_left, mid_value), self.inverse_matrix_right)
 
 
 class MultipleLayer(nn.Module):

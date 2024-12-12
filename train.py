@@ -11,7 +11,7 @@ from datetime import datetime
 import time
 from tqdm import tqdm
 
-from utils.observation_matrix import get_kronecker_matrix
+from utils.observation_matrix import get_ob_matrix
 from utils.config import device_index, p
 from models.ir_net import ADMMIRNet
 from models.pnp_net import ADMMPnPNet
@@ -64,7 +64,7 @@ weights_dir = os.path.join('./weights', datetime.now().strftime("%Y_%m_%d"))
 if not os.path.exists(weights_dir):
     os.makedirs(weights_dir)
 
-kronecker_matrix = get_kronecker_matrix(batch_size)
+right_matrix, left_matrix= get_ob_matrix(batch_size)
 operator = p
 
 if network == 'ir':
@@ -75,7 +75,8 @@ if network == 'ir':
         ).to(device)
 elif network == 'pnp':
     model = ADMMPnPNet(
-        kronecker_matrix, 
+        left_matrix, 
+        right_matrix, 
         operator, 
         args.layer_num, 
         args.internal_iteration,

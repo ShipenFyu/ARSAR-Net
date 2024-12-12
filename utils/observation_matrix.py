@@ -32,6 +32,9 @@ def get_ob_matrix(batch_size):
 
 
 def get_kronecker_matrix(batch_size):
+    '''
+    CUDA out of memory
+    '''
     F_fast, Ft_fast = get_fourier_matrix(Nfast, Nfast)
     F_slow, Ft_slow = get_fourier_matrix(Nslow, Nslow)
 
