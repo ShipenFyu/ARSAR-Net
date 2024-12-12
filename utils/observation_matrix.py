@@ -29,3 +29,22 @@ def get_ob_matrix(batch_size):
     Phi_slow = torch.matmul(Aht_slow, Ah_slow).expand(batch_size, -1, -1).to(device)
 
     return Phi_fast, Phi_slow
+
+
+def get_kronecker_matrix(batch_size):
+    F_fast, Ft_fast = get_fourier_matrix(Nfast, Nfast)
+    F_slow, Ft_slow = get_fourier_matrix(Nslow, Nslow)
+
+    Phi_fast = torch.matmul(F_fast, Ft_fast).expand(batch_size, -1, -1)
+    Phi_slow = torch.matmul(Ft_slow, F_slow).expand(batch_size, -1, -1)
+
+    Phi_fast_H = Phi_fast.conj().permute(0, 2, 1)
+    Phi_slow_H = Phi_slow.conj().permute(0, 2, 1)
+
+    Phi_fast_a = torch.matmul(Phi_fast, Phi_fast_H)  # \Phi_R * \Phi_R^H
+    Phi_slow_a = torch.matmul(Phi_slow_H, Phi_slow)  # \Phi_L^H * \Phi_L
+
+    Phi_fast_at = Phi_fast_a.permute(0, 2, 1)
+    kronecker_matrix = torch.kron(Phi_fast_at, Phi_slow_a).to(device)
+    
+    return kronecker_matrix
