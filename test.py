@@ -13,7 +13,7 @@ from utils.observation_matrix import get_ob_matrix
 from utils.evaluate import normalize, psnr_evaluate, ssim_evaluate
 from utils.config import device_index, p
 from models.ir_net import ADMMIRNet
-from models.pnp_net import ADMMPnPNet
+from models.pnp_net import NonInversionADMMPnPNet
 
 
 parser = argparse.ArgumentParser(description='Implicit Regularization Testing')
@@ -59,7 +59,7 @@ if network == 'ir':
         args.internal_iteration,
         ).to(device)
 elif network == 'pnp':
-    model = ADMMPnPNet(
+    model = NonInversionADMMPnPNet(
         left_matrix, 
         right_matrix, 
         operator, 
@@ -121,7 +121,7 @@ def figure_generate(echo_norm, rec_norm, img_norm, rec_psnr, index):
         os.makedirs(save_dir)
     if len(index) == 1:
         save_path = os.path.join(save_dir, f'figure_{1}.png')
-        plt.figure(figsize=(20, 5))
+        plt.figure(figsize=(15, 5))
 
         plt.subplot(1, 3, 1)
         plt.imshow(echo_norm[index[0]], cmap="gray", origin="lower")
@@ -144,7 +144,7 @@ def figure_generate(echo_norm, rec_norm, img_norm, rec_psnr, index):
     else:
         for num in index:
             save_path = os.path.join(save_dir, f'figure_{num + 1}.png')
-            plt.figure(figsize=(20, 5))
+            plt.figure(figsize=(15, 5))
 
             plt.subplot(1, 3, 1)
             plt.imshow(echo_norm[num], cmap="gray", origin="lower")
@@ -168,7 +168,6 @@ def figure_generate(echo_norm, rec_norm, img_norm, rec_psnr, index):
 
 if __name__ == '__main__':
     index = [i for i in range(8)]
-    # index = [4] 
     rec = test()
     echo_norm, rec_norm, img_norm, rec_psnr = pre_process(rec, echo_labels_array, 
                                                           image_labels_array)

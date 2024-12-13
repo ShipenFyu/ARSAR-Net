@@ -9,7 +9,7 @@ from utils.config import device_index
 device = torch.device(device_index if torch.cuda.is_available() else "cpu")
 
 
-class ADMMPnPNet(nn.Module):
+class NonInversionADMMPnPNet(nn.Module):
     def __init__(
         self, 
         ob_matrix_left,
@@ -24,7 +24,7 @@ class ADMMPnPNet(nn.Module):
         kernel_size = 3, 
         num_breakpoints = 60,
         ):
-        super(ADMMPnPNet, self).__init__()
+        super(NonInversionADMMPnPNet, self).__init__()
         self.rho = nn.Parameter(torch.tensor([0.1]), requires_grad=True)
         self.eta = nn.Parameter(torch.tensor([1.0]), requires_grad=True)
 
@@ -42,7 +42,7 @@ class ADMMPnPNet(nn.Module):
         self.iteration_net = nn.Sequential(*layers)
     
     def forward(self, input):
-        x = self.reconstruction_start(input, 0, 0)
+        x = self.reconstruction_start(input, 0, 0, 0)
         beta = self.multiple(0, x, 0)
         z = torch.zeros_like(x, device=device_index)
 
@@ -57,7 +57,7 @@ class ADMMPnPNet(nn.Module):
         z = input_dict['z']
         beta = input_dict['beta']
 
-        x = self.reconstruction_end(input, z, beta)
+        x = self.reconstruction_end(input, x, z, beta)
 
         return x
 
@@ -104,7 +104,7 @@ class BasicBlock(nn.Module):
         z = input_dict['z']
         beta = input_dict['beta']
 
-        x = self.reconstruction(input, z, beta)
+        x = self.reconstruction(input, x, z, beta)
         z = self.regular_layer(x, beta)
         beta = self.multiple(beta, x, z)
 
@@ -116,26 +116,28 @@ class BasicBlock(nn.Module):
 
 
 class ReconstructionLayer(nn.Module):
+    '''
+    Non inversion ADMM: Optimization using second-order Taylor expansion, replacing matrix inversion step
+    Method cited from: A 3-D Sparse SAR Imaging Method Based on Plug-and-Play
+    '''
     def __init__(self, rho, Phi_fast, Phi_slow, operator, is_first=False):
         super(ReconstructionLayer, self).__init__()
         self.rho = rho
         self.operator = operator
         self.is_first = is_first
 
+        self.matrix_dict = self.get_matrix_dict(Phi_fast, Phi_slow)
+
+    def get_matrix_dict(self, Phi_fast, Phi_slow):
         Phi_fast_H = Phi_fast.conj().permute(0, 2, 1)
         Phi_slow_H = Phi_slow.conj().permute(0, 2, 1)
-        Phi_fast_a = torch.matmul(Phi_fast, Phi_fast_H)
-        Phi_slow_a = torch.matmul(Phi_slow_H, Phi_slow)
 
-        rho_detached = self.rho.detach()  # it's ok?
-        
-        identity_right = rho_detached.to(device) * torch.eye(Phi_fast_a.shape[1]).expand(Phi_fast_a.shape[0], -1, -1).to(device)
-        identity_left = rho_detached.to(device) * torch.eye(Phi_slow_a.shape[1]).expand(Phi_slow_a.shape[0], -1, -1).to(device)
-        coffe_matrix_right = Phi_fast_a + identity_right
-        coffe_matrix_left = Phi_slow_a + identity_left
-        
-        self.inverse_matrix_right = torch.inverse(coffe_matrix_right)
-        self.inverse_matrix_left = torch.inverse(coffe_matrix_left)        
+        Phi_fast_a = torch.matmul(Phi_fast, Phi_fast_H)  # \Phi_R * \Phi_R^H
+        Phi_slow_a = torch.matmul(Phi_slow_H, Phi_slow)  # \Phi_L^H * \Phi_L
+
+        matrix_dict = {'fast_a': Phi_fast_a, 'slow_a': Phi_slow_a}
+
+        return matrix_dict
 
     def I_strip(self, echo):
         echo_fr = fftshift(fft(echo, dim=1), dim=1)
@@ -147,15 +149,18 @@ class ReconstructionLayer(nn.Module):
         image = ifft(ifftshift(echo_fr, dim=1), dim=1)
         return image
 
-    def forward(self, input, z, beta):
+    def forward(self, input, x, z, beta):
         trivial_value = self.I_strip(input)
         if self.is_first:
-            value = torch.zeros_like(trivial_value, device=device_index)  # initialize
+            addition_value = torch.zeros_like(trivial_value, device=device_index)  # initialize
         else:
-            value = torch.sub(z, beta)
-        mid_value = trivial_value + self.rho * value
+            residual_value = self.rho * torch.sub(z, beta)
+            former_value = (1 - self.rho) * x
+            scaled_value = torch.matmul(self.matrix_dict['slow_a'], 
+                                        torch.matmul(x, self.matrix_dict['fast_a']))
+            addition_value = former_value - scaled_value + residual_value
 
-        return torch.matmul(torch.matmul(self.inverse_matrix_left, mid_value), self.inverse_matrix_right)
+        return trivial_value + addition_value
 
 
 class MultipleLayer(nn.Module):

@@ -14,14 +14,14 @@ from tqdm import tqdm
 from utils.observation_matrix import get_ob_matrix
 from utils.config import device_index, p
 from models.ir_net import ADMMIRNet
-from models.pnp_net import ADMMPnPNet
+from models.pnp_net import NonInversionADMMPnPNet
 from logs.log_utils import configure_logging, log_training_info
 
 
 parser = argparse.ArgumentParser(description='Implicit Regularization Training')
 parser.add_argument('--trn_dataset', default='data', help='Training dataset directory')
 parser.add_argument('--network', default='pnp', help='Backbone network pnp or ir')
-parser.add_argument('--epochs', default=40, type=int, help='Epochs')
+parser.add_argument('--epochs', default=30, type=int, help='Epochs')
 parser.add_argument('--nsave', default=2, help='Save model after every nSave epoch')
 parser.add_argument('--batch_size', default=2, type=int, help='Batch size for training')
 parser.add_argument('--lr', default=5e-4, type=float, help='Initial learning rate')
@@ -74,7 +74,7 @@ if network == 'ir':
         args.internal_iteration,
         ).to(device)
 elif network == 'pnp':
-    model = ADMMPnPNet(
+    model = NonInversionADMMPnPNet(
         left_matrix, 
         right_matrix, 
         operator, 
