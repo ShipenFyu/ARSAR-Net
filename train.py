@@ -11,8 +11,8 @@ from datetime import datetime
 import time
 from tqdm import tqdm
 
-from utils.observation_matrix import get_ob_matrix
-from utils.config import device_index, p
+from utils.observation_matrix import downsampling_matrix_create
+from utils.config import device_index, processor
 from models.ir_net import ADMMIRNet
 from models.pnp_net import NonInversionADMMPnPNet
 from logs.log_utils import configure_logging, log_training_info
@@ -20,7 +20,9 @@ from logs.log_utils import configure_logging, log_training_info
 
 parser = argparse.ArgumentParser(description='Implicit Regularization Training')
 parser.add_argument('--trn_dataset', default='data', help='Training dataset directory')
+parser.add_argument('--device', default=device_index, help='The regularization type to PnP network')
 parser.add_argument('--network', default='pnp', help='Backbone network pnp or ir')
+parser.add_argument('--regularization', default='unet', help='The regularization type to PnP network')
 parser.add_argument('--epochs', default=30, type=int, help='Epochs')
 parser.add_argument('--nsave', default=2, help='Save model after every nSave epoch')
 parser.add_argument('--batch_size', default=2, type=int, help='Batch size for training')
@@ -28,14 +30,14 @@ parser.add_argument('--lr', default=5e-4, type=float, help='Initial learning rat
 parser.add_argument('--layer_num', default=9, type=int, help='Net block num in iteration')
 parser.add_argument('--internal_iteration', default=6, type=int, help='ADMM-Net z block iteration num')
 parser.add_argument('--checkpoint', default=None, help='Continue model training')
-parser.add_argument('--regularization', default='unet', help='The regularization type to PnP network')
-parser.add_argument('--device', default=device_index, help='The regularization type to PnP network')
+parser.add_argument('--down-sampling_rate', default=0.5, type=float, help='Azimuth down-sampling rate')
 
 args = parser.parse_args()
 
 network = args.network
 epochs = args.epochs
 batch_size = args.batch_size
+down_rate = args.down_sampling_rate
 
 device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 if platform.system() == 'Windows':
@@ -43,11 +45,14 @@ if platform.system() == 'Windows':
 else:
     num_workers = 0  # workers error
 
+down_matrix, down_matrix_t = downsampling_matrix_create(down_rate)
+
 train_file_path = [os.path.join(args.trn_dataset, 'image_train.npy'), 
                    os.path.join(args.trn_dataset, 'echo_train.npy')]
 
 image_labels_tensor = torch.tensor(np.load(train_file_path[0]), dtype=torch.complex64).to(device)
 echo_labels_tensor = torch.tensor(np.load(train_file_path[1]), dtype=torch.complex64).to(device)
+echo_labels_tensor = torch.einsum('ij,bjk->bik', down_matrix, echo_labels_tensor)  # echo downsampling
 
 validation_indices = torch.randperm(image_labels_tensor.size(0))[:128]
 validation_image = image_labels_tensor[validation_indices]
@@ -64,20 +69,16 @@ weights_dir = os.path.join('./weights', datetime.now().strftime("%Y_%m_%d"))
 if not os.path.exists(weights_dir):
     os.makedirs(weights_dir)
 
-right_matrix, left_matrix= get_ob_matrix(batch_size)
-operator = p
-
 if network == 'ir':
     model = ADMMIRNet( 
-        operator, 
+        processor,  
         args.layer_num, 
         args.internal_iteration,
         ).to(device)
 elif network == 'pnp':
     model = NonInversionADMMPnPNet(
-        left_matrix, 
-        right_matrix, 
-        operator, 
+        processor, 
+        down_matrix_t, 
         args.layer_num, 
         args.internal_iteration,
         args.regularization,

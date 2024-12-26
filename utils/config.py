@@ -3,13 +3,6 @@ import torch
 
 
 # Variables of training
-epochs = 80
-nsave = 5  # save model after every nSave epoch
-batch_size = 8
-lr = 1e-3
-img_size = 512
-layer_num = 9
-internal_iteration = 6
 device_index = 'cuda:0'
 
 
@@ -53,4 +46,4 @@ rc = torch.tensor(rc, dtype=torch.complex64)
 ac = np.exp(1j * 4 * np.pi * Rgroup / Lambda * D_f_eta - 1j * 4 * np.pi * Km / C**2 * (1 - D_f_eta / Dref) * (Rgroup / D_f_eta - Rref / D_f_eta)**2)
 ac = torch.tensor(ac, dtype=torch.complex64)
 
-p = {'sc': sc, 'rc': rc, 'ac': ac}
+processor = {'sc': sc, 'rc': rc, 'ac': ac}

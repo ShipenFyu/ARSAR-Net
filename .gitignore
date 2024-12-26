@@ -16,8 +16,9 @@ data/*
 weights/*
 !weights/
 
-# exam.py
+# python script for exam
 exam.py
+downsampling.py
 
 # images
 images/*

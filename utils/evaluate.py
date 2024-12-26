@@ -1,4 +1,5 @@
 import numpy as np
+from numpy.fft import fft, ifft, fftshift, ifftshift
 from skimage.metrics import structural_similarity
 
 
@@ -45,3 +46,16 @@ def ssim_evaluate(img, rec):
         ssim[i] = structural_similarity(img[i], rec[i], data_range=img[i].max())
     
     return ssim
+
+
+def aliasing_construct(echo, down_matrix, operator):
+    rec_echo = np.einsum('ij,bjk->bik', down_matrix, echo)
+    echo_fr = fftshift(fft(rec_echo, axis=1, norm='ortho'), axes=1)
+    echo_fr = echo_fr * operator['sc'].numpy()
+    echo_fra = fftshift(fft(echo_fr, axis=2, norm='ortho'), axes=2)
+    echo_fra = echo_fra * operator['rc'].numpy()
+    echo_fr = ifft(ifftshift(echo_fra, axes=2), axis=2, norm='ortho')
+    echo_fr = echo_fr * operator['ac'].numpy()
+    image = ifft(ifftshift(echo_fr, axes=1), axis=1, norm='ortho')
+    
+    return image

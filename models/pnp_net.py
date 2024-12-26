@@ -12,9 +12,8 @@ device = torch.device(device_index if torch.cuda.is_available() else "cpu")
 class NonInversionADMMPnPNet(nn.Module):
     def __init__(
         self, 
-        ob_matrix_left,
-        ob_matrix_right,
         operator,
+        down_matrix, 
         num_phase,
         iteration,
         regular,
@@ -26,18 +25,19 @@ class NonInversionADMMPnPNet(nn.Module):
         ):
         super(NonInversionADMMPnPNet, self).__init__()
         self.rho = nn.Parameter(torch.tensor([0.1]), requires_grad=True)
+        self.gamma = nn.Parameter(torch.tensor([-0.1]), requires_grad=True)
         self.eta = nn.Parameter(torch.tensor([1.0]), requires_grad=True)
 
-        self.reconstruction_start = ReconstructionLayer(self.rho, ob_matrix_right, 
-                                                        ob_matrix_left, operator, is_first=True)
-        self.reconstruction_end = ReconstructionLayer(self.rho, ob_matrix_right, 
-                                                      ob_matrix_left, operator, is_first=False)
+        self.reconstruction_start = ReconstructionLayer(self.rho, self.gamma, operator, 
+                                                        down_matrix, is_first=True)
+        self.reconstruction_end = ReconstructionLayer(self.rho, self.gamma, operator, 
+                                                        down_matrix, is_first=False)
         self.multiple = MultipleLayer(self.eta, is_first=True)
         layers = []
 
         for _ in range(num_phase):
-            layers.append(BasicBlock(ob_matrix_right, ob_matrix_left, operator, regular, in_channels, out_channels, 
-                                     base_channels, kernel_size, num_breakpoints, iteration, self.rho, self.eta))
+            layers.append(BasicBlock(operator, down_matrix, regular, in_channels, out_channels, base_channels, 
+                                     kernel_size, num_breakpoints, iteration, self.rho, self.eta, self.gamma))
         
         self.iteration_net = nn.Sequential(*layers)
     
@@ -64,10 +64,9 @@ class NonInversionADMMPnPNet(nn.Module):
 
 class BasicBlock(nn.Module):
     def __init__(
-            self, 
-            ob_matrix_right, 
-            ob_matrix_left, 
+            self,  
             operator, 
+            down_matrix, 
             regular, 
             in_channels, 
             out_channels,
@@ -77,12 +76,13 @@ class BasicBlock(nn.Module):
             iteration, 
             rho, 
             eta,
+            gamma
             ):
         super(BasicBlock, self).__init__()
         regularization = {'l1': SoftThresLayer, 'tv': TotalVarLayer, 
                           'ir': RecurrentBlock, 'unet': UnetUpdateLayer}
 
-        self.reconstruction = ReconstructionLayer(rho, ob_matrix_right, ob_matrix_left, operator)
+        self.reconstruction = ReconstructionLayer(rho, gamma, operator, down_matrix)
         self.multiple = MultipleLayer(eta)
 
         if regular == 'l1':
@@ -120,45 +120,38 @@ class ReconstructionLayer(nn.Module):
     Non inversion ADMM: Optimization using second-order Taylor expansion, replacing matrix inversion step
     Method cited from: A 3-D Sparse SAR Imaging Method Based on Plug-and-Play
     '''
-    def __init__(self, rho, Phi_fast, Phi_slow, operator, is_first=False):
+    def __init__(self, rho, gamma, operator, down_matrix, is_first=False):
         super(ReconstructionLayer, self).__init__()
         self.rho = rho
+        self.gamma = gamma
         self.operator = operator
         self.is_first = is_first
+        self.down_matrix = down_matrix
 
-        self.matrix_dict = self.get_matrix_dict(Phi_fast, Phi_slow)
-
-    def get_matrix_dict(self, Phi_fast, Phi_slow):
-        Phi_fast_H = Phi_fast.conj().permute(0, 2, 1)
-        Phi_slow_H = Phi_slow.conj().permute(0, 2, 1)
-
-        Phi_fast_a = torch.matmul(Phi_fast, Phi_fast_H)  # \Phi_R * \Phi_R^H
-        Phi_slow_a = torch.matmul(Phi_slow_H, Phi_slow)  # \Phi_L^H * \Phi_L
-
-        matrix_dict = {'fast_a': Phi_fast_a, 'slow_a': Phi_slow_a}
-
-        return matrix_dict
-
-    def I_strip(self, echo):
-        echo_fr = fftshift(fft(echo, dim=1), dim=1)
+    def imaging_operator(self, echo):
+        '''
+        Nonuniform Azimuth FFT -> RCMC -> Range FFT -> Range Compression
+        -> Range IFFT -> Azimuth Compression -> Azimuth IFFT 
+        '''
+        rec_echo = torch.matmul(self.down_matrix, echo)
+        echo_fr = fftshift(fft(rec_echo, dim=1, norm='ortho'), dim=1)
         echo_fr = echo_fr * self.operator['sc'].to(device)
-        echo_fra = fftshift(fft(echo_fr, dim=2), dim=2)
+        echo_fra = fftshift(fft(echo_fr, dim=2, norm='ortho'), dim=2)
         echo_fra = echo_fra * self.operator['rc'].to(device)
-        echo_fr = ifft(ifftshift(echo_fra, dim=2), dim=2)
+        echo_fr = ifft(ifftshift(echo_fra, dim=2), dim=2, norm='ortho')
         echo_fr = echo_fr * self.operator['ac'].to(device)
-        image = ifft(ifftshift(echo_fr, dim=1), dim=1)
+        image = ifft(ifftshift(echo_fr, dim=1), dim=1, norm='ortho')
+        
         return image
 
     def forward(self, input, x, z, beta):
-        trivial_value = self.I_strip(input)
+        trivial_value = self.imaging_operator(input)
         if self.is_first:
             addition_value = torch.zeros_like(trivial_value, device=device_index)  # initialize
         else:
-            residual_value = self.rho * torch.sub(z, beta)
-            former_value = (1 - self.rho) * x
-            scaled_value = torch.matmul(self.matrix_dict['slow_a'], 
-                                        torch.matmul(x, self.matrix_dict['fast_a']))
-            addition_value = former_value - scaled_value + residual_value
+            penalty_value = self.rho * torch.sub(z, beta)
+            scaled_value = self.gamma * x
+            addition_value = scaled_value + penalty_value
 
         return trivial_value + addition_value
 
