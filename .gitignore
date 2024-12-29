@@ -6,15 +6,14 @@ __pycache__/
 
 # data: update .py
 data/*
-!data/
 !data/*.py
+!data/downsampling_method
 
 # log
 *.log
 
 # weights
 weights/*
-!weights/
 
 # python script for exam
 exam.py
@@ -22,7 +21,7 @@ downsampling.py
 
 # images
 images/*
-!images/
+!images/*.jpg
 
 # markdown and pdf
 summary/
