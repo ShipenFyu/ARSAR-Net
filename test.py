@@ -1,6 +1,7 @@
 import os
 import argparse
 import platform
+import warnings
 
 import numpy as np
 import torch
@@ -11,23 +12,24 @@ from tqdm import tqdm
 
 from utils.observation_matrix import downsampling_matrix_create
 from utils.evaluate import normalize, psnr_evaluate, ssim_evaluate, aliasing_construct
-from utils.config import device_index, processor
+from utils.config import processor
 from models.ir_net import ADMMIRNet
 from models.pnp_net import NonInversionADMMPnPNet
 
 
 parser = argparse.ArgumentParser(description='Implicit Regularization Testing')
 parser.add_argument('--tst_dataset', default='data', help='Testing dataset directory')
-parser.add_argument('--device', default=device_index, help='The regularization type to PnP network')
+parser.add_argument('--device', default='cuda:0', help='The regularization type to PnP network')
 parser.add_argument('--network', default='pnp', help='Backbone network pnp or ir')
 parser.add_argument('--regularization', default='unet', help='The regularization type to PnP network')
 parser.add_argument('--batch_size', default=2, type=int, help='Batch size for testing')
 parser.add_argument('--layer_num', default=9, type=int, help='Net block num in iteration')
 parser.add_argument('--internal_iteration', default=6, type=int, help='ADMM-Net z block iteration num')
-parser.add_argument('--down-sampling_rate', default=0.5, type=float, help='Azimuth down-sampling rate')
+parser.add_argument('--down_sampling_rate', default=0.5, type=float, help='Azimuth down-sampling rate')
 
 args = parser.parse_args()
 
+device_index = args.device
 network = args.network
 batch_size = args.batch_size
 down_rate = args.down_sampling_rate
@@ -38,7 +40,7 @@ if platform.system() == 'Windows':
 else:
     num_workers = 0  # workers error
 
-down_matrix, down_matrix_t = downsampling_matrix_create(down_rate)
+down_matrix, down_matrix_t = downsampling_matrix_create(down_rate, device_index)
 
 test_file_path = [os.path.join(args.tst_dataset, 'image_test.npy'), 
                    os.path.join(args.tst_dataset, 'echo_test.npy')]
@@ -62,6 +64,7 @@ if network == 'ir':
         ).to(device)
 elif network == 'pnp':
     model = NonInversionADMMPnPNet(
+        device_index, 
         processor, 
         down_matrix_t, 
         args.layer_num, 
@@ -75,7 +78,10 @@ print('Model Initialized!')
 split_path = '/home/FuShiping/ADMM-IR/weights/2024_12_26/weights_model_pnp_epochs_26_22_58_30.pt'.split('/')[-3:]
 weight_path = os.path.join(split_path[0], split_path[1], split_path[2])
 
-model.load_state_dict(torch.load(weight_path)['model_state_dict'])
+with warnings.catch_warnings():
+    # avoid FutureWarning for 'weights_only=False'
+    warnings.simplefilter("ignore", category=FutureWarning)
+    model.load_state_dict(torch.load(weight_path)['model_state_dict'])
 model.eval()
 print('Weight File Loaded!')
 

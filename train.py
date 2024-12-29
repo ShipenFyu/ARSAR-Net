@@ -12,7 +12,7 @@ import time
 from tqdm import tqdm
 
 from utils.observation_matrix import downsampling_matrix_create
-from utils.config import device_index, processor
+from utils.config import processor
 from models.ir_net import ADMMIRNet
 from models.pnp_net import NonInversionADMMPnPNet
 from logs.log_utils import configure_logging, log_training_info
@@ -20,21 +20,23 @@ from logs.log_utils import configure_logging, log_training_info
 
 parser = argparse.ArgumentParser(description='Implicit Regularization Training')
 parser.add_argument('--trn_dataset', default='data', help='Training dataset directory')
-parser.add_argument('--device', default=device_index, help='The regularization type to PnP network')
+parser.add_argument('--device', default='cuda:0', help='The regularization type to PnP network')
 parser.add_argument('--network', default='pnp', help='Backbone network pnp or ir')
 parser.add_argument('--regularization', default='unet', help='The regularization type to PnP network')
-parser.add_argument('--epochs', default=30, type=int, help='Epochs')
-parser.add_argument('--nsave', default=2, help='Save model after every nSave epoch')
+parser.add_argument('--epochs', default=80, type=int, help='Epochs')
+parser.add_argument('--nsave', default=1, type=int, help='Save model after every nSave epoch')
 parser.add_argument('--batch_size', default=2, type=int, help='Batch size for training')
 parser.add_argument('--lr', default=5e-4, type=float, help='Initial learning rate')
 parser.add_argument('--layer_num', default=9, type=int, help='Net block num in iteration')
 parser.add_argument('--internal_iteration', default=6, type=int, help='ADMM-Net z block iteration num')
 parser.add_argument('--checkpoint', default=None, help='Continue model training')
-parser.add_argument('--down-sampling_rate', default=0.5, type=float, help='Azimuth down-sampling rate')
+parser.add_argument('--down_sampling_rate', default=0.75, type=float, help='Azimuth down-sampling rate')
 
 args = parser.parse_args()
 
+device_index = args.device
 network = args.network
+regular = args.regularization
 epochs = args.epochs
 batch_size = args.batch_size
 down_rate = args.down_sampling_rate
@@ -45,7 +47,7 @@ if platform.system() == 'Windows':
 else:
     num_workers = 0  # workers error
 
-down_matrix, down_matrix_t = downsampling_matrix_create(down_rate)
+down_matrix, down_matrix_t = downsampling_matrix_create(down_rate, device_index)
 
 train_file_path = [os.path.join(args.trn_dataset, 'image_train.npy'), 
                    os.path.join(args.trn_dataset, 'echo_train.npy')]
@@ -77,11 +79,12 @@ if network == 'ir':
         ).to(device)
 elif network == 'pnp':
     model = NonInversionADMMPnPNet(
+        device_index, 
         processor, 
         down_matrix_t, 
         args.layer_num, 
         args.internal_iteration,
-        args.regularization,
+        regular,
         ).to(device)
 else:
     raise ValueError(f'unknown network name {network} found!')
@@ -116,8 +119,8 @@ def save_checkpoint(model_cur, optimizer_cur, epoch, loss):
         'optimizer_state_dict': optimizer_cur.state_dict(),
         'loss': loss,
     }
-    save_model = os.path.join(weights_dir, f'weights_model_{network}_epochs_{epoch}_' + 
-                             f'{datetime.now().strftime("%H_%M_%S")}.pt')
+    save_model = os.path.join(weights_dir, f'downsample_{down_rate}_epochs_{epoch}_' + 
+                              f'{datetime.now().strftime("%H_%M_%S")}.pt')
     torch.save(checkpoint, save_model)
 
 
@@ -135,8 +138,9 @@ def train(checkpoint=None):
     log_training_info(logger, 'Training started')
     log_training_info(logger, 'Platform: {}'.format(platform.system()))
     log_training_info(logger, f"Parameters: Epochs: {epochs}, Batch Size: {batch_size},"
-                              f" Learning Rate: {args.lr}, Regularization: {args.regularization}")
+                              f" Learning Rate: {args.lr}, Regularization: {regular}")
     log_training_info(logger, f"Layer_num: {args.layer_num}, Internal_iteration: {args.internal_iteration}")
+    log_training_info(logger, f"Downsampling Rate: {int(down_rate * 100)}percent")
     start_time = time.time()
     print('Training started at', datetime.now().strftime("%Y %m %d-%H:%M:%S"))
 
@@ -177,12 +181,11 @@ def train(checkpoint=None):
         print(f'Validation Loss: {avgValLoss:.6f}')
         log_training_info(logger, f'Epoch [{epoch + 1}/{args.epochs}], Validation Loss: {avgValLoss:.6f}')
 
-        if avgValLoss < best_val_loss:
+        if avgValLoss < best_val_loss and (epoch + 1) % args.nsave == 0:
             best_val_loss = avgValLoss
-            if (epoch + 1) % args.nsave == 0:
-                print(f'Saving model with improved validation loss: {best_val_loss:.6f}')
-                log_training_info(logger, f'Saving model with improved validation loss: {best_val_loss:.6f}')
-                save_checkpoint(model, optimizer, epoch + 1, avgTrnLoss)
+            print(f'Saving model with improved validation loss: {best_val_loss:.6f}')
+            log_training_info(logger, f'Saving model with improved validation loss: {best_val_loss:.6f}')
+            save_checkpoint(model, optimizer, epoch + 1, avgTrnLoss)
 
     end_time = time.time()
     print('Training completed in minutes', (end_time - start_time) / 60)

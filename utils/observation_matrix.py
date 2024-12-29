@@ -1,14 +1,12 @@
 import torch
 import numpy as np
 
-from utils.config import Nslow, Nfast, device_index
-
-device = torch.device(device_index if torch.cuda.is_available() else "cpu")
+from utils.config import Nslow, Nfast
 
 
 def get_fourier_matrix(dim, k):
     '''
-    generate Fourier transform matrix with fft_shift
+    generate Fourier matrix with fft_shift
     '''
     n = torch.arange(dim, dtype=torch.float32).view(1, -1).to(torch.complex64)
     coeff = torch.tensor(-1j * 2 * np.pi, dtype=torch.complex64)  # -2πj
@@ -20,7 +18,9 @@ def get_fourier_matrix(dim, k):
     return Ah, Aht
 
 
-def get_ob_matrix(batch_size, down_rate):
+def get_ob_matrix(batch_size, down_rate, device_index):
+    device = torch.device(device_index if torch.cuda.is_available() else "cpu")
+
     A_downsample = Nslow * down_rate
 
     Ah_fast, Aht_fast = get_fourier_matrix(Nfast, Nfast)
@@ -32,10 +32,11 @@ def get_ob_matrix(batch_size, down_rate):
     return Phi_fast, Phi_slow
 
 
-def get_kronecker_matrix(batch_size, down_rate):
+def get_kronecker_matrix(batch_size, down_rate, device_index):
     '''
     CUDA out of memory
     '''
+    device = torch.device(device_index if torch.cuda.is_available() else "cpu")
     A_downsample = Nslow * down_rate
 
     F_fast, Ft_fast = get_fourier_matrix(Nfast, Nfast)
@@ -56,7 +57,9 @@ def get_kronecker_matrix(batch_size, down_rate):
     return kronecker_matrix
 
 
-def downsampling_matrix_create(down_rate):
+def downsampling_matrix_create(down_rate, device_index):
+    device = torch.device(device_index if torch.cuda.is_available() else "cpu")
+
     Ah, Aht = get_fourier_matrix(Nslow, torch.load(f'./data/downsampling_method/{int(down_rate * 100)}pct_method.pth', 
                                                    weights_only=True))
     return Ah.to(device), Aht.to(device)

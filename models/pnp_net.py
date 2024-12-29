@@ -4,14 +4,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.fft import fft, ifft, fftshift, ifftshift
 
-from utils.config import device_index
-
-device = torch.device(device_index if torch.cuda.is_available() else "cpu")
-
 
 class NonInversionADMMPnPNet(nn.Module):
     def __init__(
         self, 
+        device_index, 
         operator,
         down_matrix, 
         num_phase,
@@ -27,16 +24,17 @@ class NonInversionADMMPnPNet(nn.Module):
         self.rho = nn.Parameter(torch.tensor([0.1]), requires_grad=True)
         self.gamma = nn.Parameter(torch.tensor([-0.1]), requires_grad=True)
         self.eta = nn.Parameter(torch.tensor([1.0]), requires_grad=True)
+        self.device_index = device_index
 
         self.reconstruction_start = ReconstructionLayer(self.rho, self.gamma, operator, 
-                                                        down_matrix, is_first=True)
+                                                        down_matrix, device_index, is_first=True)
         self.reconstruction_end = ReconstructionLayer(self.rho, self.gamma, operator, 
-                                                        down_matrix, is_first=False)
-        self.multiple = MultipleLayer(self.eta, is_first=True)
+                                                        down_matrix, device_index, is_first=False)
+        self.multiple = MultipleLayer(self.eta, device_index, is_first=True)
         layers = []
 
         for _ in range(num_phase):
-            layers.append(BasicBlock(operator, down_matrix, regular, in_channels, out_channels, base_channels, 
+            layers.append(BasicBlock(device_index, operator, down_matrix, regular, in_channels, out_channels, base_channels, 
                                      kernel_size, num_breakpoints, iteration, self.rho, self.eta, self.gamma))
         
         self.iteration_net = nn.Sequential(*layers)
@@ -44,7 +42,7 @@ class NonInversionADMMPnPNet(nn.Module):
     def forward(self, input):
         x = self.reconstruction_start(input, 0, 0, 0)
         beta = self.multiple(0, x, 0)
-        z = torch.zeros_like(x, device=device_index)
+        z = torch.zeros_like(x, device=self.device_index)
 
         input_dict = dict()
         input_dict['input'] = input
@@ -64,7 +62,8 @@ class NonInversionADMMPnPNet(nn.Module):
 
 class BasicBlock(nn.Module):
     def __init__(
-            self,  
+            self, 
+            device_index, 
             operator, 
             down_matrix, 
             regular, 
@@ -82,8 +81,8 @@ class BasicBlock(nn.Module):
         regularization = {'l1': SoftThresLayer, 'tv': TotalVarLayer, 
                           'ir': RecurrentBlock, 'unet': UnetUpdateLayer}
 
-        self.reconstruction = ReconstructionLayer(rho, gamma, operator, down_matrix)
-        self.multiple = MultipleLayer(eta)
+        self.reconstruction = ReconstructionLayer(rho, gamma, operator, down_matrix, device_index)
+        self.multiple = MultipleLayer(eta, device_index)
 
         if regular == 'l1':
             self.regular_layer = regularization[regular]()
@@ -120,13 +119,15 @@ class ReconstructionLayer(nn.Module):
     Non inversion ADMM: Optimization using second-order Taylor expansion, replacing matrix inversion step
     Method cited from: A 3-D Sparse SAR Imaging Method Based on Plug-and-Play
     '''
-    def __init__(self, rho, gamma, operator, down_matrix, is_first=False):
+    def __init__(self, rho, gamma, operator, down_matrix, device_index, is_first=False):
         super(ReconstructionLayer, self).__init__()
         self.rho = rho
         self.gamma = gamma
         self.operator = operator
         self.is_first = is_first
         self.down_matrix = down_matrix
+        self.device_index = device_index
+        self.device = torch.device(device_index if torch.cuda.is_available() else "cpu")
 
     def imaging_operator(self, echo):
         '''
@@ -135,11 +136,11 @@ class ReconstructionLayer(nn.Module):
         '''
         rec_echo = torch.matmul(self.down_matrix, echo)
         echo_fr = fftshift(fft(rec_echo, dim=1, norm='ortho'), dim=1)
-        echo_fr = echo_fr * self.operator['sc'].to(device)
+        echo_fr = echo_fr * self.operator['sc'].to(self.device)
         echo_fra = fftshift(fft(echo_fr, dim=2, norm='ortho'), dim=2)
-        echo_fra = echo_fra * self.operator['rc'].to(device)
+        echo_fra = echo_fra * self.operator['rc'].to(self.device)
         echo_fr = ifft(ifftshift(echo_fra, dim=2), dim=2, norm='ortho')
-        echo_fr = echo_fr * self.operator['ac'].to(device)
+        echo_fr = echo_fr * self.operator['ac'].to(self.device)
         image = ifft(ifftshift(echo_fr, dim=1), dim=1, norm='ortho')
         
         return image
@@ -147,7 +148,7 @@ class ReconstructionLayer(nn.Module):
     def forward(self, input, x, z, beta):
         trivial_value = self.imaging_operator(input)
         if self.is_first:
-            addition_value = torch.zeros_like(trivial_value, device=device_index)  # initialize
+            addition_value = torch.zeros_like(trivial_value, device=self.device_index)  # initialize
         else:
             penalty_value = self.rho * torch.sub(z, beta)
             scaled_value = self.gamma * x
@@ -157,14 +158,15 @@ class ReconstructionLayer(nn.Module):
 
 
 class MultipleLayer(nn.Module):
-    def __init__(self, eta, is_first=False):
+    def __init__(self, eta, device_index, is_first=False):
         super(MultipleLayer, self).__init__()
         self.eta = eta
+        self.device_index = device_index
         self.is_first = is_first
 
     def forward(self, beta, x, z):
         if self.is_first:
-            return torch.zeros_like(x, device=device_index)  # initialize
+            return torch.zeros_like(x, device=self.device_index)  # initialize
         else:
             return torch.add(beta, self.eta * torch.sub(x, z))
     
