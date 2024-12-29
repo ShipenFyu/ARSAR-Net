@@ -9,7 +9,6 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from datetime import datetime
 import time
-from tqdm import tqdm
 
 from utils.observation_matrix import downsampling_matrix_create
 from utils.config import processor
@@ -141,8 +140,8 @@ def train(checkpoint=None):
                               f" Learning Rate: {args.lr}, Regularization: {regular}")
     log_training_info(logger, f"Layer_num: {args.layer_num}, Internal_iteration: {args.internal_iteration}")
     log_training_info(logger, f"Downsampling Rate: {int(down_rate * 100)}percent")
+    log_training_info(logger, f"Training started at {datetime.now().strftime('%Y %m %d-%H:%M:%S')}")
     start_time = time.time()
-    print('Training started at', datetime.now().strftime("%Y %m %d-%H:%M:%S"))
 
     start_epoch = 0
     if checkpoint is not None:
@@ -150,10 +149,11 @@ def train(checkpoint=None):
             start_epoch = load_checkpoint(model, optimizer, checkpoint)
     
     best_val_loss = float('inf')
+    counter = 0
     for epoch in range(start_epoch, epochs):
         model.train()
         epoch_loss = []
-        for clip in tqdm(train_loader, desc=f'Training Epoch: [{epoch + 1}/{epochs}]'):
+        for clip in train_loader:
             image, echo = clip[0].to(device), clip[1].to(device)
             output = model(echo)
 
@@ -165,33 +165,31 @@ def train(checkpoint=None):
             epoch_loss.append(loss.item())
 
         avgTrnLoss = np.mean(epoch_loss)
-        print(f'Training Loss: {avgTrnLoss:.6f}')
         log_training_info(logger, f'Epoch [{epoch + 1}/{args.epochs}], Training Loss: {avgTrnLoss:.6f}')
 
         model.eval()
         val_loss = []
         with torch.no_grad():
-            for clip in tqdm(val_loader, desc=f'Validation Epoch: [{epoch + 1}/{epochs}]'):
+            for clip in val_loader:
                 image, echo = clip[0].to(device), clip[1].to(device)
                 output = model(echo)
                 loss = criterion(output, image)
                 val_loss.append(loss.item())
 
         avgValLoss = np.mean(val_loss)
-        print(f'Validation Loss: {avgValLoss:.6f}')
         log_training_info(logger, f'Epoch [{epoch + 1}/{args.epochs}], Validation Loss: {avgValLoss:.6f}')
 
-        if avgValLoss < best_val_loss and (epoch + 1) % args.nsave == 0:
+        if avgValLoss < best_val_loss:
+            counter += 1
             best_val_loss = avgValLoss
-            print(f'Saving model with improved validation loss: {best_val_loss:.6f}')
-            log_training_info(logger, f'Saving model with improved validation loss: {best_val_loss:.6f}')
-            save_checkpoint(model, optimizer, epoch + 1, avgTrnLoss)
+            if counter % args.nsave == 0:
+                log_training_info(logger, f'Saving model with improved validation loss: {best_val_loss:.6f}')
+                save_checkpoint(model, optimizer, epoch + 1, avgTrnLoss)
 
     end_time = time.time()
-    print('Training completed in minutes', (end_time - start_time) / 60)
-    print('Training completed at', datetime.now().strftime("%Y %m %d-%H:%M:%S"))
-    log_training_info(logger, "Training completed")
-
+    log_training_info(logger, f"Training completed in minutes {(end_time - start_time) / 60}")
+    log_training_info(logger, f"Training completed at {datetime.now().strftime('%Y %m %d-%H:%M:%S')}")
+    
 
 if __name__ == '__main__':
     checkpoint = args.checkpoint
