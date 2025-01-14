@@ -10,26 +10,27 @@ from torch.utils.data import DataLoader, TensorDataset
 from datetime import datetime
 import time
 
-from utils.observation_matrix import downsampling_matrix_create
+from utils.observation_matrix import random_sampling_create
 from utils.config import processor
 from models.ir_net import ADMMIRNet
 from models.pnp_net import NonInversionADMMPnPNet
 from logs.log_utils import configure_logging, log_training_info
 
 
-parser = argparse.ArgumentParser(description='Implicit Regularization Training')
-parser.add_argument('--trn_dataset', default='data', help='Training dataset directory')
-parser.add_argument('--device', default='cuda:0', help='The regularization type to PnP network')
+parser = argparse.ArgumentParser(description='ARSAR-Net Training')
+parser.add_argument('--trn_dataset', default='./data/train', help='Training dataset directory')
+parser.add_argument('--val_dataset', default='./data/val', help='Validation dataset directory')
+parser.add_argument('--device', default='cuda:1', help='The regularization type to PnP network')
 parser.add_argument('--network', default='pnp', help='Backbone network pnp or ir')
 parser.add_argument('--regularization', default='unet', help='The regularization type to PnP network')
 parser.add_argument('--epochs', default=80, type=int, help='Epochs')
 parser.add_argument('--nsave', default=1, type=int, help='Save model after every nSave epoch')
 parser.add_argument('--batch_size', default=2, type=int, help='Batch size for training')
 parser.add_argument('--lr', default=5e-4, type=float, help='Initial learning rate')
-parser.add_argument('--layer_num', default=9, type=int, help='Net block num in iteration')
+parser.add_argument('--layer_num', default=8, type=int, help='Net block num in iteration')
 parser.add_argument('--internal_iteration', default=6, type=int, help='ADMM-Net z block iteration num')
 parser.add_argument('--checkpoint', default=None, help='Continue model training')
-parser.add_argument('--down_sampling_rate', default=0.75, type=float, help='Azimuth down-sampling rate')
+parser.add_argument('--down_sampling_rate', default=0.50, type=float, help='Azimuth down-sampling rate')
 
 args = parser.parse_args()
 
@@ -46,24 +47,24 @@ if platform.system() == 'Windows':
 else:
     num_workers = 0  # workers error
 
-down_matrix, down_matrix_t = downsampling_matrix_create(down_rate, device_index)
+_, up_matrix = random_sampling_create(down_rate, device_index)
 
 train_file_path = [os.path.join(args.trn_dataset, 'image_train.npy'), 
-                   os.path.join(args.trn_dataset, 'echo_train.npy')]
+                   os.path.join(args.trn_dataset, f'echo_{int(down_rate * 100)}_train.npy')]
+val_file_path = [os.path.join(args.val_dataset, 'image_val.npy'), 
+                 os.path.join(args.val_dataset, f'echo_{int(down_rate * 100)}_val.npy')]
 
-image_labels_tensor = torch.tensor(np.load(train_file_path[0]), dtype=torch.complex64).to(device)
-echo_labels_tensor = torch.tensor(np.load(train_file_path[1]), dtype=torch.complex64).to(device)
-echo_labels_tensor = torch.einsum('ij,bjk->bik', down_matrix, echo_labels_tensor)  # echo downsampling
+train_image = torch.tensor(np.load(train_file_path[0]), dtype=torch.complex64).to(device)
+train_echo = torch.tensor(np.load(train_file_path[1]), dtype=torch.complex64).to(device)
 
-validation_indices = torch.randperm(image_labels_tensor.size(0))[:128]
-validation_image = image_labels_tensor[validation_indices]
-validation_echo = echo_labels_tensor[validation_indices]
+val_image = torch.tensor(np.load(train_file_path[0]), dtype=torch.complex64).to(device)
+val_echo = torch.tensor(np.load(train_file_path[1]), dtype=torch.complex64).to(device)
 
-train_dataset = TensorDataset(image_labels_tensor, echo_labels_tensor)
-validation_dataset = TensorDataset(validation_image, validation_echo)
+train_dataset = TensorDataset(train_image, train_echo)
+val_dataset = TensorDataset(val_image, val_echo)
 
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
-val_loader = DataLoader(validation_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 print('DataLoader Finished!')
 
 weights_dir = os.path.join('./weights', datetime.now().strftime("%Y_%m_%d"))
@@ -80,7 +81,7 @@ elif network == 'pnp':
     model = NonInversionADMMPnPNet(
         device_index, 
         processor, 
-        down_matrix_t, 
+        up_matrix, 
         args.layer_num, 
         args.internal_iteration,
         regular,

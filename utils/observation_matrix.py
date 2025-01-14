@@ -12,7 +12,7 @@ def get_fourier_matrix(dim, k):
     coeff = torch.tensor(-1j * 2 * np.pi, dtype=torch.complex64)  # -2πj
     scale = torch.tensor(1. / np.sqrt(dim), dtype=torch.complex64)  # 1/sqrt(N)
 
-    Ah = torch.exp(coeff * torch.matmul((k - 1 / 2), n)) * scale
+    Ah = torch.exp(coeff * torch.matmul(k, n)) * scale
     Aht = Ah.conj().permute(1, 0)
 
     return Ah, Aht
@@ -63,3 +63,15 @@ def downsampling_matrix_create(down_rate, device_index):
     Ah, Aht = get_fourier_matrix(Nslow, torch.load(f'./data/downsampling_method/{int(down_rate * 100)}pct_method.pth', 
                                                    weights_only=True))
     return Ah.to(device), Aht.to(device)
+
+
+def random_sampling_create(down_rate, device_index):
+    device = torch.device(device_index if torch.cuda.is_available() else "cpu")
+
+    full_matrix = np.eye(Nslow)
+    down_method = np.load(f'./data/downsampling_method/{int(down_rate * 100)}pct_method.npy')
+
+    selected_matrix = torch.tensor(full_matrix[down_method], dtype=torch.complex64)
+    selected_matrix_t = selected_matrix.permute(1, 0)
+
+    return selected_matrix.to(device), selected_matrix_t.to(device)

@@ -1,10 +1,8 @@
 import numpy as np
 import torch
 
-
 # Variables of training
 device_index = 'cuda:0'
-
 
 # Configuration of SAR
 C = 299792458
@@ -41,9 +39,12 @@ Dref = np.sqrt(1 - Lambda**2 * Fdc**2 / 4 / Vs**2)
 
 sc = np.exp(1j * np.pi * Km * (Dref / D_f_eta - 1) * (Trl - 2 * Rref / C / D_f_eta)**2)
 sc = torch.tensor(sc, dtype=torch.complex64)
+sc = torch.div(sc, torch.abs(sc))
 rc = np.exp(1j * np.pi * D_f_eta * Frl**2 / Km / Dref + 1j * 4 * np.pi * (1 / D_f_eta - 1 / Dref) * Rref * Frl / C)
 rc = torch.tensor(rc, dtype=torch.complex64)
+rc = torch.div(rc, torch.abs(rc))
 ac = np.exp(1j * 4 * np.pi * Rgroup / Lambda * D_f_eta - 1j * 4 * np.pi * Km / C**2 * (1 - D_f_eta / Dref) * (Rgroup / D_f_eta - Rref / D_f_eta)**2)
 ac = torch.tensor(ac, dtype=torch.complex64)
+ac = torch.div(ac, torch.abs(ac))
 
 processor = {'sc': sc, 'rc': rc, 'ac': ac}

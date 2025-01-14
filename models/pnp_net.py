@@ -10,7 +10,7 @@ class NonInversionADMMPnPNet(nn.Module):
         self, 
         device_index, 
         operator,
-        down_matrix, 
+        up_matrix, 
         num_phase,
         iteration,
         regular,
@@ -27,14 +27,14 @@ class NonInversionADMMPnPNet(nn.Module):
         self.device_index = device_index
 
         self.reconstruction_start = ReconstructionLayer(self.rho, self.gamma, operator, 
-                                                        down_matrix, device_index, is_first=True)
+                                                        up_matrix, device_index, is_first=True)
         self.reconstruction_end = ReconstructionLayer(self.rho, self.gamma, operator, 
-                                                        down_matrix, device_index, is_first=False)
+                                                        up_matrix, device_index, is_first=False)
         self.multiple = MultipleLayer(self.eta, device_index, is_first=True)
         layers = []
 
         for _ in range(num_phase):
-            layers.append(BasicBlock(device_index, operator, down_matrix, regular, in_channels, out_channels, base_channels, 
+            layers.append(BasicBlock(device_index, operator, up_matrix, regular, in_channels, out_channels, base_channels, 
                                      kernel_size, num_breakpoints, iteration, self.rho, self.eta, self.gamma))
         
         self.iteration_net = nn.Sequential(*layers)
@@ -65,7 +65,7 @@ class BasicBlock(nn.Module):
             self, 
             device_index, 
             operator, 
-            down_matrix, 
+            up_matrix, 
             regular, 
             in_channels, 
             out_channels,
@@ -81,7 +81,7 @@ class BasicBlock(nn.Module):
         regularization = {'l1': SoftThresLayer, 'tv': TotalVarLayer, 
                           'ir': RecurrentBlock, 'unet': UnetUpdateLayer}
 
-        self.reconstruction = ReconstructionLayer(rho, gamma, operator, down_matrix, device_index)
+        self.reconstruction = ReconstructionLayer(rho, gamma, operator, up_matrix, device_index)
         self.multiple = MultipleLayer(eta, device_index)
 
         if regular == 'l1':
@@ -119,13 +119,13 @@ class ReconstructionLayer(nn.Module):
     Non inversion ADMM: Optimization using second-order Taylor expansion, replacing matrix inversion step
     Method cited from: A 3-D Sparse SAR Imaging Method Based on Plug-and-Play
     '''
-    def __init__(self, rho, gamma, operator, down_matrix, device_index, is_first=False):
+    def __init__(self, rho, gamma, operator, up_matrix, device_index, is_first=False):
         super(ReconstructionLayer, self).__init__()
         self.rho = rho
         self.gamma = gamma
         self.operator = operator
         self.is_first = is_first
-        self.down_matrix = down_matrix
+        self.up_matrix = up_matrix
         self.device_index = device_index
         self.device = torch.device(device_index if torch.cuda.is_available() else "cpu")
 
@@ -135,13 +135,14 @@ class ReconstructionLayer(nn.Module):
         -> Range IFFT -> Azimuth Compression -> Azimuth IFFT 
         '''
         rec_echo = torch.matmul(self.down_matrix, echo)
-        echo_fr = fftshift(fft(rec_echo, dim=1, norm='ortho'), dim=1)
-        echo_fr = echo_fr * self.operator['sc'].to(self.device)
-        echo_fra = fftshift(fft(echo_fr, dim=2, norm='ortho'), dim=2)
-        echo_fra = echo_fra * self.operator['rc'].to(self.device)
-        echo_fr = ifft(ifftshift(echo_fra, dim=2), dim=2, norm='ortho')
-        echo_fr = echo_fr * self.operator['ac'].to(self.device)
-        image = ifft(ifftshift(echo_fr, dim=1), dim=1, norm='ortho')
+        echo_fa = fftshift(fft(rec_echo, dim=1, norm='ortho'), dim=1)
+        echo_fa = fftshift(echo_fa, dim=1)
+        echo_fa = echo_fa * self.operator['sc'].to(self.device)
+        echo_far = fftshift(fft(echo_fa, dim=2, norm='ortho'), dim=2)
+        echo_far = echo_far * self.operator['rc'].to(self.device)
+        echo_fa = ifft(ifftshift(echo_far, dim=2), dim=2, norm='ortho')
+        echo_fa = echo_fa * self.operator['ac'].to(self.device)
+        image = ifft(ifftshift(echo_fa, dim=1), dim=1, norm='ortho')
         
         return image
 

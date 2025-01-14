@@ -17,7 +17,7 @@ from models.ir_net import ADMMIRNet
 from models.pnp_net import NonInversionADMMPnPNet
 
 
-parser = argparse.ArgumentParser(description='Implicit Regularization Testing')
+parser = argparse.ArgumentParser(description='ARSAR-Net Testing')
 parser.add_argument('--tst_dataset', default='data', help='Testing dataset directory')
 parser.add_argument('--device', default='cuda:0', help='The regularization type to PnP network')
 parser.add_argument('--network', default='pnp', help='Backbone network pnp or ir')
