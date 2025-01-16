@@ -10,22 +10,22 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 from tqdm import tqdm
 
-from utils.observation_matrix import downsampling_matrix_create
-from utils.evaluate import normalize, psnr_evaluate, ssim_evaluate, aliasing_construct
+from utils.observation_matrix import random_sampling_create
+from utils.evaluate import range_cut, psnr_evaluate, ssim_evaluate, aliasing_construct
 from utils.config import processor
 from models.ir_net import ADMMIRNet
 from models.pnp_net import NonInversionADMMPnPNet
 
 
-parser = argparse.ArgumentParser(description='ARSAR-Net Testing')
-parser.add_argument('--tst_dataset', default='data', help='Testing dataset directory')
-parser.add_argument('--device', default='cuda:0', help='The regularization type to PnP network')
+parser = argparse.ArgumentParser(description='Implicit Regularization Testing')
+parser.add_argument('--tst_dataset', default='./data/test', help='Testing dataset directory')
+parser.add_argument('--device', default='cuda:4', help='The regularization type to PnP network')
 parser.add_argument('--network', default='pnp', help='Backbone network pnp or ir')
 parser.add_argument('--regularization', default='unet', help='The regularization type to PnP network')
 parser.add_argument('--batch_size', default=2, type=int, help='Batch size for testing')
-parser.add_argument('--layer_num', default=9, type=int, help='Net block num in iteration')
+parser.add_argument('--layer_num', default=8, type=int, help='Net block num in iteration')
 parser.add_argument('--internal_iteration', default=6, type=int, help='ADMM-Net z block iteration num')
-parser.add_argument('--down_sampling_rate', default=0.5, type=float, help='Azimuth down-sampling rate')
+parser.add_argument('--down_sampling_rate', default=1.0, type=float, help='Azimuth down-sampling rate')
 
 args = parser.parse_args()
 
@@ -40,19 +40,18 @@ if platform.system() == 'Windows':
 else:
     num_workers = 0  # workers error
 
-down_matrix, down_matrix_t = downsampling_matrix_create(down_rate, device_index)
+_, up_matrix = random_sampling_create(down_rate, device_index)
 
 test_file_path = [os.path.join(args.tst_dataset, 'image_test.npy'), 
-                   os.path.join(args.tst_dataset, 'echo_test.npy')]
+                   os.path.join(args.tst_dataset, f'echo_{int(down_rate * 100)}_test.npy')]
 
-image_labels_array = np.load(test_file_path[0])
-echo_labels_array = np.load(test_file_path[1])
+test_image_array = np.load(test_file_path[0])
+test_echo_array = np.load(test_file_path[1])
+test_image = torch.tensor(test_image_array, dtype=torch.complex64).to(device)
+test_echo = torch.tensor(test_echo_array, dtype=torch.complex64).to(device)
 
-image_labels_tensor = torch.tensor(image_labels_array, dtype=torch.complex64).to(device)
-echo_labels_tensor = torch.tensor(echo_labels_array, dtype=torch.complex64).to(device)
-echo_labels_tensor = torch.einsum('ij,bjk->bik', down_matrix, echo_labels_tensor)  # echo downsampling
+test_dataset = TensorDataset(test_image, test_echo)
 
-test_dataset = TensorDataset(image_labels_tensor, echo_labels_tensor)
 test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 print('DataLoader Finished!')
 
@@ -66,7 +65,7 @@ elif network == 'pnp':
     model = NonInversionADMMPnPNet(
         device_index, 
         processor, 
-        down_matrix_t, 
+        up_matrix, 
         args.layer_num, 
         args.internal_iteration,
         args.regularization,
@@ -75,7 +74,7 @@ else:
     raise ValueError(f'unknown network name {network} found!')
 print('Model Initialized!')
 
-split_path = '/home/FuShiping/ADMM-IR/weights/2024_12_26/weights_model_pnp_epochs_26_22_58_30.pt'.split('/')[-3:]
+split_path = '/home/FuShiping/ADMM-IR/weights/2025_01_14/downsample_1.0_epochs_44_14_44_55.pt'.split('/')[-3:]
 weight_path = os.path.join(split_path[0], split_path[1], split_path[2])
 
 with warnings.catch_warnings():
@@ -87,7 +86,7 @@ print('Weight File Loaded!')
 
 
 def test():
-    rec = np.zeros(image_labels_array.shape ,dtype=np.complex64)
+    rec = np.zeros(test_image_array.shape ,dtype=np.complex64)
 
     print('SAR Reconstruction started at', datetime.now().strftime("%H:%M:%S"))
     with torch.no_grad():
@@ -102,20 +101,18 @@ def test():
 
 def pre_process(rec, echo, img):
     output_dict = {}
-
-    echo = np.einsum('ij,bjk->bik', down_matrix.cpu().numpy(), echo)
-    aliasing = aliasing_construct(echo, down_matrix_t.cpu().numpy(), processor)
+    aliasing = aliasing_construct(echo, up_matrix.cpu().numpy(), processor)
 
     rec = np.abs(rec)
     echo = np.abs(echo)
     aliasing = np.abs(aliasing)
     img = np.abs(img)
 
-    # norm
-    rec_norm = normalize(rec)
-    echo_norm = normalize(echo)
-    aliasing_norm = normalize(aliasing)
-    img_norm = normalize(img)
+    # range cut
+    rec_norm = range_cut(rec)
+    echo_norm = range_cut(echo)
+    aliasing_norm = range_cut(aliasing)
+    img_norm = range_cut(img)
 
     # PSNR and SSIM
     rec_psnr = psnr_evaluate(img_norm, rec_norm)
@@ -207,5 +204,5 @@ def figure_generate(output_dict, index):
 if __name__ == '__main__':
     index = [i for i in range(8)]
     rec = test()
-    output_dict = pre_process(rec, echo_labels_array, image_labels_array)
+    output_dict = pre_process(rec, test_echo_array, test_image_array)
     figure_generate(output_dict, index)
