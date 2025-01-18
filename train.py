@@ -58,8 +58,8 @@ val_file_path = [os.path.join(args.val_dataset, 'image_val.npy'),
 train_image = torch.tensor(np.load(train_file_path[0]), dtype=torch.complex64).to(device)
 train_echo = torch.tensor(np.load(train_file_path[1]), dtype=torch.complex64).to(device)
 
-val_image = torch.tensor(np.load(train_file_path[0]), dtype=torch.complex64).to(device)
-val_echo = torch.tensor(np.load(train_file_path[1]), dtype=torch.complex64).to(device)
+val_image = torch.tensor(np.load(val_file_path[0]), dtype=torch.complex64).to(device)
+val_echo = torch.tensor(np.load(val_file_path[1]), dtype=torch.complex64).to(device)
 
 train_dataset = TensorDataset(train_image, train_echo)
 val_dataset = TensorDataset(val_image, val_echo)
