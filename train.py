@@ -9,6 +9,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from datetime import datetime
 import time
+from tqdm import tqdm
 
 from utils.observation_matrix import random_sampling_create
 from utils.config import processor
@@ -30,7 +31,7 @@ parser.add_argument('--lr', default=5e-4, type=float, help='Initial learning rat
 parser.add_argument('--layer_num', default=8, type=int, help='Net block num in iteration')
 parser.add_argument('--internal_iteration', default=6, type=int, help='ADMM-Net z block iteration num')
 parser.add_argument('--checkpoint', default=None, help='Continue model training')
-parser.add_argument('--down_sampling_rate', default=0.50, type=float, help='Azimuth down-sampling rate')
+parser.add_argument('--down_rate', default=0.50, type=float, help='Azimuth down-sampling rate')
 
 args = parser.parse_args()
 
@@ -39,7 +40,7 @@ network = args.network
 regular = args.regularization
 epochs = args.epochs
 batch_size = args.batch_size
-down_rate = args.down_sampling_rate
+down_rate = args.down_rate
 
 device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 if platform.system() == 'Windows':
@@ -143,6 +144,7 @@ def train(checkpoint=None):
     log_training_info(logger, f"Downsampling Rate: {int(down_rate * 100)}percent")
     log_training_info(logger, f"Training started at {datetime.now().strftime('%Y %m %d-%H:%M:%S')}")
     start_time = time.time()
+    print('Training started at', datetime.now().strftime("%Y %m %d-%H:%M:%S"))
 
     start_epoch = 0
     if checkpoint is not None:
@@ -154,7 +156,7 @@ def train(checkpoint=None):
     for epoch in range(start_epoch, epochs):
         model.train()
         epoch_loss = []
-        for clip in train_loader:
+        for clip in tqdm(train_loader, desc=f'Training Epoch: [{epoch + 1}/{epochs}]'):
             image, echo = clip[0].to(device), clip[1].to(device)
             output = model(echo)
 
@@ -166,28 +168,33 @@ def train(checkpoint=None):
             epoch_loss.append(loss.item())
 
         avgTrnLoss = np.mean(epoch_loss)
+        print(f'Training Loss: {avgTrnLoss:.6f}')
         log_training_info(logger, f'Epoch [{epoch + 1}/{args.epochs}], Training Loss: {avgTrnLoss:.6f}')
 
         model.eval()
         val_loss = []
         with torch.no_grad():
-            for clip in val_loader:
+            for clip in tqdm(val_loader, desc=f'Validation Epoch: [{epoch + 1}/{epochs}]'):
                 image, echo = clip[0].to(device), clip[1].to(device)
                 output = model(echo)
                 loss = criterion(output, image)
                 val_loss.append(loss.item())
 
         avgValLoss = np.mean(val_loss)
+        print(f'Validation Loss: {avgValLoss:.6f}')
         log_training_info(logger, f'Epoch [{epoch + 1}/{args.epochs}], Validation Loss: {avgValLoss:.6f}')
 
         if avgValLoss < best_val_loss:
             counter += 1
             best_val_loss = avgValLoss
             if counter % args.nsave == 0:
+                print(f'Saving model with improved validation loss: {best_val_loss:.6f}')
                 log_training_info(logger, f'Saving model with improved validation loss: {best_val_loss:.6f}')
                 save_checkpoint(model, optimizer, epoch + 1, avgTrnLoss)
 
     end_time = time.time()
+    print('Training completed in minutes', (end_time - start_time) / 60)
+    print('Training completed at', datetime.now().strftime("%Y %m %d-%H:%M:%S"))
     log_training_info(logger, f"Training completed in minutes {(end_time - start_time) / 60}")
     log_training_info(logger, f"Training completed at {datetime.now().strftime('%Y %m %d-%H:%M:%S')}")
     

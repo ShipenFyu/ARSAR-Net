@@ -17,15 +17,15 @@ from models.ir_net import ADMMIRNet
 from models.pnp_net import NonInversionADMMPnPNet
 
 
-parser = argparse.ArgumentParser(description='Implicit Regularization Testing')
+parser = argparse.ArgumentParser(description='ARSAR-Net Testing')
 parser.add_argument('--tst_dataset', default='./data/test', help='Testing dataset directory')
-parser.add_argument('--device', default='cuda:4', help='The regularization type to PnP network')
+parser.add_argument('--device', default='cuda:3', help='The regularization type to PnP network')
 parser.add_argument('--network', default='pnp', help='Backbone network pnp or ir')
 parser.add_argument('--regularization', default='unet', help='The regularization type to PnP network')
 parser.add_argument('--batch_size', default=2, type=int, help='Batch size for testing')
 parser.add_argument('--layer_num', default=8, type=int, help='Net block num in iteration')
 parser.add_argument('--internal_iteration', default=6, type=int, help='ADMM-Net z block iteration num')
-parser.add_argument('--down_sampling_rate', default=1.0, type=float, help='Azimuth down-sampling rate')
+parser.add_argument('--down_sampling_rate', default=0.5, type=float, help='Azimuth down-sampling rate')
 
 args = parser.parse_args()
 
@@ -74,7 +74,7 @@ else:
     raise ValueError(f'unknown network name {network} found!')
 print('Model Initialized!')
 
-split_path = '/home/FuShiping/ADMM-IR/weights/2025_01_14/downsample_1.0_epochs_44_14_44_55.pt'.split('/')[-3:]
+split_path = '/home/FuShiping/ADMM-IR/weights/2025_01_16/downsample_0.5_epochs_79_03_08_51.pt'.split('/')[-3:]
 weight_path = os.path.join(split_path[0], split_path[1], split_path[2])
 
 with warnings.catch_warnings():
