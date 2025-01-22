@@ -1,7 +1,7 @@
 import os
 import argparse
-import platform
 import warnings
+from typing import Iterable
 
 import numpy as np
 import torch
@@ -17,76 +17,26 @@ from models.ir_net import ADMMIRNet
 from models.pnp_net import NonInversionADMMPnPNet
 
 
-parser = argparse.ArgumentParser(description='ARSAR-Net Testing')
-parser.add_argument('--tst_dataset', default='./data/test', help='Testing dataset directory')
-parser.add_argument('--device', default='cuda:3', help='The regularization type to PnP network')
-parser.add_argument('--network', default='pnp', help='Backbone network pnp or ir')
-parser.add_argument('--regularization', default='unet', help='The regularization type to PnP network')
-parser.add_argument('--batch_size', default=2, type=int, help='Batch size for testing')
-parser.add_argument('--layer_num', default=8, type=int, help='Net block num in iteration')
-parser.add_argument('--internal_iteration', default=6, type=int, help='ADMM-Net z block iteration num')
-parser.add_argument('--down_sampling_rate', default=0.5, type=float, help='Azimuth down-sampling rate')
+def get_args():
+    parser = argparse.ArgumentParser(description='ARSAR-Net Testing')
+    parser.add_argument('--tst_dataset', default='./data/concat', help='Testing dataset directory')
+    parser.add_argument('--weight', default='/weights/harbour/2025_01_22/downsample_0.5_epochs_55_17_38_35.pt')
+    parser.add_argument('--device', default='cuda:4', help='The regularization type to PnP network')
+    parser.add_argument('--network', default='pnp', help='Backbone network pnp or ir')
+    parser.add_argument('--regularization', default='unet', help='The regularization type to PnP network')
+    parser.add_argument('--batch_size', default=2, type=int, help='Batch size for testing')
+    parser.add_argument('--layer_num', default=8, type=int, help='Net block num in iteration')
+    parser.add_argument('--internal_iteration', default=6, type=int, help='ADMM-Net z block iteration num')
+    parser.add_argument('--down_sampling_rate', default=0.5, type=float, help='Azimuth down-sampling rate')
+    args = parser.parse_args()
 
-args = parser.parse_args()
-
-device_index = args.device
-network = args.network
-batch_size = args.batch_size
-down_rate = args.down_sampling_rate
-
-device = torch.device(args.device if torch.cuda.is_available() else "cpu")
-if platform.system() == 'Windows':
-    num_workers = 0
-else:
-    num_workers = 0  # workers error
-
-_, up_matrix = random_sampling_create(down_rate, device_index)
-
-test_file_path = [os.path.join(args.tst_dataset, 'image_test.npy'), 
-                   os.path.join(args.tst_dataset, f'echo_{int(down_rate * 100)}_test.npy')]
-
-test_image_array = np.load(test_file_path[0])
-test_echo_array = np.load(test_file_path[1])
-test_image = torch.tensor(test_image_array, dtype=torch.complex64).to(device)
-test_echo = torch.tensor(test_echo_array, dtype=torch.complex64).to(device)
-
-test_dataset = TensorDataset(test_image, test_echo)
-
-test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
-print('DataLoader Finished!')
-
-if network == 'ir':
-    model = ADMMIRNet(
-        processor, 
-        args.layer_num, 
-        args.internal_iteration,
-        ).to(device)
-elif network == 'pnp':
-    model = NonInversionADMMPnPNet(
-        device_index, 
-        processor, 
-        up_matrix, 
-        args.layer_num, 
-        args.internal_iteration,
-        args.regularization,
-        ).to(device)
-else:
-    raise ValueError(f'unknown network name {network} found!')
-print('Model Initialized!')
-
-split_path = '/home/FuShiping/ADMM-IR/weights/2025_01_16/downsample_0.5_epochs_79_03_08_51.pt'.split('/')[-3:]
-weight_path = os.path.join(split_path[0], split_path[1], split_path[2])
-
-with warnings.catch_warnings():
-    # avoid FutureWarning for 'weights_only=False'
-    warnings.simplefilter("ignore", category=FutureWarning)
-    model.load_state_dict(torch.load(weight_path)['model_state_dict'])
-model.eval()
-print('Weight File Loaded!')
+    return args
 
 
-def test():
-    rec = np.zeros(test_image_array.shape ,dtype=np.complex64)
+def test_model(model: torch.nn.Module, test_loader: Iterable, 
+         device: torch.device, batch_size: int, test_image
+         ):
+    rec = np.zeros(test_image.shape ,dtype=np.complex64)
 
     print('SAR Reconstruction started at', datetime.now().strftime("%H:%M:%S"))
     with torch.no_grad():
@@ -99,7 +49,7 @@ def test():
     return rec
 
 
-def pre_process(rec, echo, img):
+def pre_process(rec, echo, img, up_matrix):
     output_dict = {}
     aliasing = aliasing_construct(echo, up_matrix.cpu().numpy(), processor)
 
@@ -136,7 +86,7 @@ def pre_process(rec, echo, img):
     return output_dict
 
 
-def figure_generate(output_dict, index):
+def figure_generate(output_dict, index, down_rate):
     save_dir = os.path.join('./images', args.regularization, f'{int(down_rate * 100)}pct')
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
@@ -201,8 +151,67 @@ def figure_generate(output_dict, index):
             plt.close()
 
 
-if __name__ == '__main__':
+def main(args):
+    weight_path = args.weight
+    device_index = args.device
+    network = args.network
+    batch_size = args.batch_size
+    down_rate = args.down_sampling_rate
+
+    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+    num_workers = 0
+
+    _, up_matrix = random_sampling_create(down_rate, device_index)
+
+    test_file_path = [os.path.join(args.tst_dataset, 'image_test.npy'), 
+                      os.path.join(args.tst_dataset, f'echo_{int(down_rate * 100)}_test.npy')]
+
+    test_image_array = np.load(test_file_path[0])
+    test_echo_array = np.load(test_file_path[1])
+    test_image = torch.tensor(test_image_array, dtype=torch.complex64).to(device)
+    test_echo = torch.tensor(test_echo_array, dtype=torch.complex64).to(device)
+
+    test_dataset = TensorDataset(test_image, test_echo)
+
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    print('DataLoader Finished!')
+
+    if network == 'ir':
+        model = ADMMIRNet(
+            processor, 
+            args.layer_num, 
+            args.internal_iteration,
+            ).to(device)
+    elif network == 'pnp':
+        model = NonInversionADMMPnPNet(
+            device_index, 
+            processor, 
+            up_matrix, 
+            args.layer_num, 
+            args.internal_iteration,
+            args.regularization,
+            ).to(device)
+    else:
+        raise ValueError(f'unknown network name {network} found!')
+    print('Model Initialized!')
+
+    split_path = weight_path.split('/')[-4:]
+    weight_path = os.path.join(split_path[0], split_path[1], split_path[2], split_path[3])
+
+    with warnings.catch_warnings():
+        # avoid FutureWarning for 'weights_only=False'
+        warnings.simplefilter("ignore", category=FutureWarning)
+        model.load_state_dict(torch.load(weight_path)['model_state_dict'])
+    model.eval()
+    print('Weight File Loaded!')
+
     index = [i for i in range(8)]
-    rec = test()
-    output_dict = pre_process(rec, test_echo_array, test_image_array)
-    figure_generate(output_dict, index)
+    rec = test_model(model, test_loader, device, 
+                     batch_size, test_image_array)
+    output_dict = pre_process(rec, test_echo_array, test_image_array, up_matrix)
+    figure_generate(output_dict, index, down_rate)
+
+
+if __name__ == '__main__':
+    args = get_args()
+    main(args)

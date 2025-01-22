@@ -16,26 +16,25 @@ class NonInversionADMMPnPNet(nn.Module):
         regular,
         in_channels = 1,
         out_channels = 32,
-        base_channels = 16,
+        base_channels = 8,  # over fitting
         kernel_size = 3, 
         num_breakpoints = 60,
         ):
         super(NonInversionADMMPnPNet, self).__init__()
         self.rho = nn.Parameter(torch.tensor([0.1]), requires_grad=True)
-        self.gamma = nn.Parameter(torch.tensor([-0.1]), requires_grad=True)
         self.eta = nn.Parameter(torch.tensor([1.0]), requires_grad=True)
         self.device_index = device_index
 
-        self.reconstruction_start = ReconstructionLayer(self.rho, self.gamma, operator, 
+        self.reconstruction_start = ReconstructionLayer(self.rho, operator, 
                                                         up_matrix, device_index, is_first=True)
-        self.reconstruction_end = ReconstructionLayer(self.rho, self.gamma, operator, 
+        self.reconstruction_end = ReconstructionLayer(self.rho, operator, 
                                                         up_matrix, device_index, is_first=False)
         self.multiple = MultipleLayer(self.eta, device_index, is_first=True)
         layers = []
 
         for _ in range(num_phase):
             layers.append(BasicBlock(device_index, operator, up_matrix, regular, in_channels, out_channels, base_channels, 
-                                     kernel_size, num_breakpoints, iteration, self.rho, self.eta, self.gamma))
+                                     kernel_size, num_breakpoints, iteration, self.rho, self.eta))
         
         self.iteration_net = nn.Sequential(*layers)
     
@@ -75,13 +74,12 @@ class BasicBlock(nn.Module):
             iteration, 
             rho, 
             eta,
-            gamma
             ):
         super(BasicBlock, self).__init__()
         regularization = {'l1': SoftThresLayer, 'tv': TotalVarLayer, 
                           'ir': RecurrentBlock, 'unet': UnetUpdateLayer}
 
-        self.reconstruction = ReconstructionLayer(rho, gamma, operator, up_matrix, device_index)
+        self.reconstruction = ReconstructionLayer(rho, operator, up_matrix, device_index)
         self.multiple = MultipleLayer(eta, device_index)
 
         if regular == 'l1':
@@ -119,10 +117,10 @@ class ReconstructionLayer(nn.Module):
     Non inversion ADMM: Optimization using second-order Taylor expansion, replacing matrix inversion step
     Method cited from: A 3-D Sparse SAR Imaging Method Based on Plug-and-Play
     '''
-    def __init__(self, rho, gamma, operator, up_matrix, device_index, is_first=False):
+    def __init__(self, rho, operator, up_matrix, device_index, is_first=False):
         super(ReconstructionLayer, self).__init__()
         self.rho = rho
-        self.gamma = gamma
+        self.gamma = nn.Parameter(torch.tensor([-0.1]), requires_grad=True)
         self.operator = operator
         self.is_first = is_first
         self.up_matrix = up_matrix
@@ -134,7 +132,7 @@ class ReconstructionLayer(nn.Module):
         Nonuniform Azimuth FFT -> RCMC -> Range FFT -> Range Compression
         -> Range IFFT -> Azimuth Compression -> Azimuth IFFT 
         '''
-        rec_echo = torch.matmul(self.down_matrix, echo)
+        rec_echo = torch.matmul(self.up_matrix, echo)
         echo_fa = fftshift(fft(rec_echo, dim=1, norm='ortho'), dim=1)
         echo_fa = fftshift(echo_fa, dim=1)
         echo_fa = echo_fa * self.operator['sc'].to(self.device)
