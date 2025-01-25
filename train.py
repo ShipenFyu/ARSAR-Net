@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from utils.observation_matrix import random_sampling_create
 from utils.config import processor
-from models.ir_net import ADMMIRNet
+from models.arsar_net import ARSARNet
 from models.pnp_net import NonInversionADMMPnPNet
 from logs.log_utils import configure_logging, log_training_info
 
@@ -39,7 +39,7 @@ def get_args():
     parser.add_argument('--trn_dataset', default='./data/train', help='Training dataset directory')
     parser.add_argument('--val_size', default=400, type=int, help='Validation dataset size')
     parser.add_argument('--device', default='cuda:1', help='The regularization type to PnP network')
-    parser.add_argument('--network', default='pnp', help='Backbone network pnp or ir')
+    parser.add_argument('--network', default='pnp', help='Backbone network pnp or arsar')
     parser.add_argument('--regularization', default='unet', help='The regularization type to PnP network')
     parser.add_argument('--epochs', default=120, type=int, help='Epochs')
     parser.add_argument('--nsave', default=1, type=int, help='Save model after every nSave epoch')
@@ -183,11 +183,14 @@ def main(args):
     if not os.path.exists(weights_dir):
         os.makedirs(weights_dir)
 
-    if network == 'ir':
-        model = ADMMIRNet( 
-            processor,  
+    if network == 'arsar':
+        model = ARSARNet( 
+            device_index, 
+            processor, 
+            up_matrix, 
             args.layer_num, 
             args.internal_iteration,
+            regular,
             ).to(device)
     elif network == 'pnp':
         model = NonInversionADMMPnPNet(

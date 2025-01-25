@@ -13,7 +13,7 @@ from tqdm import tqdm
 from utils.observation_matrix import random_sampling_create
 from utils.evaluate import range_cut, psnr_evaluate, ssim_evaluate, aliasing_construct
 from utils.config import processor
-from models.ir_net import ADMMIRNet
+from models.arsar_net import ARSARNet
 from models.pnp_net import NonInversionADMMPnPNet
 
 
@@ -22,7 +22,7 @@ def get_args():
     parser.add_argument('--tst_dataset', default='./data/concat', help='Testing dataset directory')
     parser.add_argument('--weight', default='/weights/harbour/2025_01_22/downsample_0.5_epochs_55_17_38_35.pt')
     parser.add_argument('--device', default='cuda:4', help='The regularization type to PnP network')
-    parser.add_argument('--network', default='pnp', help='Backbone network pnp or ir')
+    parser.add_argument('--network', default='pnp', help='Backbone network pnp or arsar')
     parser.add_argument('--regularization', default='unet', help='The regularization type to PnP network')
     parser.add_argument('--batch_size', default=2, type=int, help='Batch size for testing')
     parser.add_argument('--layer_num', default=8, type=int, help='Net block num in iteration')
@@ -176,11 +176,14 @@ def main(args):
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
     print('DataLoader Finished!')
 
-    if network == 'ir':
-        model = ADMMIRNet(
+    if network == 'arsar':
+        model = ARSARNet(
+            device_index, 
             processor, 
+            up_matrix, 
             args.layer_num, 
             args.internal_iteration,
+            args.regularization,
             ).to(device)
     elif network == 'pnp':
         model = NonInversionADMMPnPNet(
