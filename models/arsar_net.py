@@ -2,8 +2,11 @@ import torch
 import torchpwl
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision.models import resnet18, resnet50
+
+from torchvision.models import resnet18, resnet34, resnet50
+from torchvision.models import ResNet18_Weights, ResNet34_Weights, ResNet50_Weights
 from torch.fft import fft, ifft, fftshift, ifftshift
+from pywt import dwt2
 
 
 class ARSARNet(nn.Module):
@@ -78,7 +81,7 @@ class BasicBlock(nn.Module):
             ):
         super(BasicBlock, self).__init__()
         regularization = {'cnn': RecurrentBlock, 'unet': UnetUpdateLayer, 
-                          'pretrain': UnetWithPretrain}
+                          'pretrain': UnetWithPretrain, 'haar': ScaleFusionLayer}
 
         self.reconstruction = ReconstructionLayer(rho, operator, up_matrix, device_index)
         self.multiple = MultipleLayer(eta, device_index)
@@ -91,8 +94,10 @@ class BasicBlock(nn.Module):
                                                          iteration)
         elif regular == 'pretrain':
             self.regular_layer = regularization[regular](in_channels, kernel_size)
+        elif regular == 'haar':
+            self.regular_layer = regularization[regular](in_channels, kernel_size)
         else:
-            raise ValueError(f'unknown regularization {regular} found!')
+            raise ValueError(f'Nnknown regularization {regular} found!')
     
     def forward(self, input_dict):
         input = input_dict['input']
@@ -344,8 +349,7 @@ class UnetLayer(nn.Module):
 
 class UnetWithPretrain(nn.Module):
     '''
-    Backbone: ResNet50 with pretrain
-    Parameters: 158M(158,713,924)
+    Backbone: ResNet18 with pretrain, parameters: 158M(158,713,924)
     '''
     def __init__(self, in_channels, kernel_size):
         super(UnetWithPretrain, self).__init__()
@@ -392,9 +396,7 @@ class UnetWithPretrain(nn.Module):
         real_z = layer(z.real)
         imag_z = layer(z.imag)
 
-        z_out = torch.complex(real_z, imag_z)
-
-        return z_out
+        return torch.complex(real_z, imag_z)
 
     def forward(self, x, beta):
         z = torch.add(x, beta)
@@ -454,63 +456,251 @@ class ConvLayer(nn.Module):
         return torch.complex(real_relu2, imag_relu2)
     
 
-class UNetWithFPN(nn.Module):
-    def __init__(self, backbone=resnet18(pretrained=True)):
-        super(UNetWithFPN, self).__init__()
-        # Backbone (ResNet)
-        layer_list = nn.Sequential(
-            backbone.conv1,
-            backbone.bn1,
-            backbone.relu,
-            backbone.maxpool,
-            backbone.layer1,
-            backbone.layer2,
-            backbone.layer3,
-            backbone.layer4,
+class ScaleFusionLayer(nn.Module):
+    '''
+    Referred to "RefineNet: Multi-Path Refinement Networks for High-Resolution Semantic Segmentation"
+    Backbone: ResNet50 with pretrain, parameters: 1.7B(1,715,560,384)
+              ResNet34 with pretrain
+    '''
+    def __init__(self, in_channels, kernel_size, net='resnet34'):
+        super(ScaleFusionLayer, self).__init__()
+        if net == 'resnet50':
+            resnet = resnet50(weights=ResNet50_Weights.DEFAULT)
+            channel_list=[3, 64, 256, 512, 1024, 2048]
+        elif net == 'resnet34':
+            resnet = resnet34(weights=ResNet34_Weights.DEFAULT)
+            channel_list=[3, 64, 64, 128, 256, 512]
+        elif net == 'resnet18':
+            resnet = resnet18(weights=ResNet18_Weights.DEFAULT)
+            channel_list=[3, 64, 64, 128, 256, 512]
+        else:
+            raise ValueError(f'Unknown ResNet type {net} found!')
+        
+        self.initial = nn.Conv2d(in_channels, 3, kernel_size=1)
+
+        self.encoder1 = nn.Sequential(
+            resnet.conv1,
+            resnet.bn1,
+            resnet.relu,
+        )  # in_channels = 3, out_channels = 64 for resnet50
+        self.encoder2 = nn.Sequential(
+            resnet.maxpool, 
+            resnet.layer1, 
+        )  # in_channels = 64, out_channels = 256  
+        self.encoder3 = resnet.layer2  # in_channels = 256, out_channels = 512
+        self.encoder4 = resnet.layer3  # in_channels = 512, out_channels = 1024
+        self.encoder5 = resnet.layer4  # in_channels = 1024, out_channels = 2048
+
+        self.rcu0 = ResidualUnit(channel_list[0], kernel_size)
+        self.rcu1 = ResidualUnit(channel_list[1], kernel_size)
+        self.rcu2 = ResidualUnit(channel_list[2], kernel_size)
+        self.rcu3 = ResidualUnit(channel_list[3], kernel_size)
+        self.rcu4 = ResidualUnit(channel_list[4], kernel_size)
+        self.rcu5 = ResidualUnit(channel_list[5], kernel_size)
+
+        self.fb4 = FusionBlock(channel_list[4], channel_list[5], kernel_size)
+        self.fb3 = FusionBlock(channel_list[3], channel_list[4], kernel_size)
+        self.fb2 = FusionBlock(channel_list[2], channel_list[3], kernel_size)
+        self.fb1 = FusionBlock(channel_list[1], channel_list[2], kernel_size)
+        self.fb0 = FusionBlock(channel_list[0], channel_list[1], kernel_size)
+
+        self.chain = ChainedHaarSampling(channel_list[0], kernel_size, 
+                                         downsampling='maxpooling')
+
+        self.out = nn.Sequential(
+            nn.Conv2d(channel_list[0] * 4, channel_list[0], kernel_size=3, padding=1),
+            nn.BatchNorm2d(channel_list[0]),
+            nn.ReLU(inplace=False),
+            nn.Conv2d(channel_list[0], in_channels, kernel_size=1, bias=False),
         )
-        self.encoders = [
-            layer_list.layer1,  # C2
-            layer_list.layer2,  # C3
-            layer_list.layer3,  # C4
-            layer_list.layer4,  # C5
-        ]
-        
-        # Lateral connections for FPN
-        self.lateral_convs = nn.ModuleList([
-            nn.Conv2d(256, 256, kernel_size=1),
-            nn.Conv2d(512, 256, kernel_size=1),
-            nn.Conv2d(1024, 256, kernel_size=1),
-            nn.Conv2d(2048, 256, kernel_size=1),
-        ])
-        
-        # Decoder for U-Net
-        self.decoders = nn.ModuleList([
-            nn.Conv2d(256, 128, kernel_size=3, padding=1),
-            nn.Conv2d(256, 64, kernel_size=3, padding=1),
-            nn.Conv2d(128, 64, kernel_size=3, padding=1),
-        ])
-        
-        # Output layer
-        self.output_conv = nn.Conv2d(64, 3, kernel_size=1)
+
+    def layer_forwrd(self, layer: nn.Module, z):
+        real_z = layer(z.real)
+        imag_z = layer(z.imag)
+
+        return torch.complex(real_z, imag_z)
     
-    def forward(self, x):
-        # Bottom-up: ResNet features
-        c2 = self.backbone.layer1(x)
-        c3 = self.backbone.layer2(c2)
-        c4 = self.backbone.layer3(c3)
-        c5 = self.backbone.layer4(c4)
+    def forward(self, x, beta):
+        z = torch.add(x, beta)
+        z_channeled = torch.unsqueeze(z, 1)
+
+        initial = self.layer_forwrd(self.initial, z_channeled)  # channel = 3, size = 512 for resnet50
+        enc1 = self.layer_forwrd(self.encoder1, initial)  # channel = 64, size = 256
+        enc2 = self.layer_forwrd(self.encoder2, enc1)  # channel = 256, size = 128
+        enc3 = self.layer_forwrd(self.encoder3, enc2)  # channel = 512, size = 64
+        enc4 = self.layer_forwrd(self.encoder4, enc3)  # channel = 1024, size = 32
+        enc5 = self.layer_forwrd(self.encoder5, enc4)  # channel = 2048, size = 16
+
+        ru0 = self.rcu0(initial)
+        ru1 = self.rcu1(enc1)
+        ru2 = self.rcu2(enc2)
+        ru3 = self.rcu3(enc3)
+        ru4 = self.rcu4(enc4)
+        ru5 = self.rcu5(enc5)
+
+        fusion4 = self.fb4(ru4, ru5)  # channel: 1024, 2048->1024, size = 32
+        fusion3 = self.fb3(ru3, fusion4)  # channel: 512, 1024->512, size = 64
+        fusion2 = self.fb2(ru2, fusion3)  # channel: 256, 512->256, size = 128
+        fusion1 = self.fb1(ru1, fusion2)  # channel: 64, 256->256, size = 256
+        fusion0 = self.fb0(ru0, fusion1)  # channel: 3, 64->3, size = 512
+
+        sampler = self.chain(fusion0)
+
+        output = self.layer_forwrd(self.out, sampler)
+        result = torch.squeeze(output, 1)
+
+        return result
+
+
+class ResidualUnit(nn.Module):
+    '''
+    Residual Convolution Unit cited from: 
+    "RefineNet: Multi-Path Refinement Networks for High-Resolution Semantic Segmentation"
+    '''
+    def __init__(self, in_channels, kernel_size):
+        super(ResidualUnit, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, in_channels, kernel_size, 
+                               padding=int((kernel_size - 1) / 2), bias=False)  # keep data consistent, bias = False
+        self.bn1 = nn.BatchNorm2d(in_channels)
+        self.relu1 = nn.ReLU(inplace=False)
+        self.conv2 = nn.Conv2d(in_channels, in_channels, kernel_size, 
+                               padding=int((kernel_size - 1) / 2), bias=False)
+        self.bn2 = nn.BatchNorm2d(in_channels)
+        self.relu2 = nn.ReLU(inplace=False)
+    
+    def forward(self, z):
+        real_conv1 = self.conv1(z.real)
+        imag_conv1 = self.conv1(z.imag)
+        real_bn1 = self.bn1(real_conv1)
+        imag_bn1 = self.bn1(imag_conv1)
+        real_relu = self.relu1(real_bn1)
+        imag_relu = self.relu1(imag_bn1)
+
+        real_conv2 = self.conv2(real_relu)
+        imag_conv2 = self.conv2(imag_relu)
+        real_bn2 = self.bn2(real_conv2)
+        imag_bn2 = self.bn2(imag_conv2)
+        real_relu2 = self.relu2(real_bn2)
+        imag_relu2 = self.relu2(imag_bn2)
+
+        return torch.complex(real_relu2, imag_relu2) + z
+
+
+class FusionBlock(nn.Module):
+    '''
+    Multi-resolution feature map fusion block cited from: 
+    "RefineNet: Multi-Path Refinement Networks for High-Resolution Semantic Segmentation"
+    '''
+    def __init__(self, in_channels, scaled_channels, kernel_size, scale_factor=2):
+        super(FusionBlock, self).__init__()
+        self.scale_factor = scale_factor
+        self.conv_l = nn.Conv2d(in_channels, in_channels, kernel_size, 
+                                padding=int((kernel_size - 1) / 2), bias=False)
+        self.conv_s = nn.Conv2d(scaled_channels, scaled_channels, kernel_size, 
+                                padding=int((kernel_size - 1) / 2), bias=False)
+
+        self.conv = nn.Conv2d(in_channels + scaled_channels, in_channels, kernel_size=1)
+        self.bn = nn.BatchNorm2d(in_channels)
+        self.relu = nn.ReLU(inplace=False)
+    
+    def forward(self, feature, feature_s):
+        real_feature = self.conv_l(feature.real)
+        imag_feature = self.conv_l(feature.imag)
+
+        real_feature_s = self.conv_s(feature_s.real)
+        imag_feature_s = self.conv_s(feature_s.imag)
+        real_interp = F.interpolate(real_feature_s, scale_factor=self.scale_factor, 
+                                    mode='bilinear', align_corners=True)
+        imag_interp = F.interpolate(imag_feature_s, scale_factor=self.scale_factor, 
+                                    mode='bilinear', align_corners=True)
         
-        # Top-down: FPN
-        p5 = self.lateral_convs[3](c5)
-        p4 = self.lateral_convs[2](c4) + nn.functional.interpolate(p5, scale_factor=2, mode='nearest')
-        p3 = self.lateral_convs[1](c3) + nn.functional.interpolate(p4, scale_factor=2, mode='nearest')
-        p2 = self.lateral_convs[0](c2) + nn.functional.interpolate(p3, scale_factor=2, mode='nearest')
+        real_concat = torch.cat([real_interp, real_feature], 1)
+        imag_concat = torch.cat([imag_interp, imag_feature], 1)
+
+        real_conv = self.conv(real_concat)
+        imag_conv = self.conv(imag_concat)
+        real_bn = self.bn(real_conv)
+        imag_bn = self.bn(imag_conv)
+        real_relu = self.relu(real_bn)
+        imag_relu = self.relu(imag_bn)
+
+        return torch.complex(real_relu, imag_relu)
+
+
+class ChainedHaarSampling(nn.Module):
+    def __init__(self, in_channels, kernel_size, downsampling='maxpooling'):
+        super(ChainedHaarSampling, self).__init__()
+        self.downsampling = downsampling
+        if self.downsampling == 'dwt':
+            self.conv1 = nn.Conv2d(in_channels * 3, in_channels, 
+                                kernel_size, padding=int((kernel_size - 1) / 2))
+            self.conv2 = nn.Conv2d(in_channels * 3, in_channels, 
+                                kernel_size, padding=int((kernel_size - 1) / 2))
+            self.conv3 = nn.Conv2d(in_channels * 3, in_channels, 
+                                kernel_size, padding=int((kernel_size - 1) / 2))
+        elif self.downsampling == 'maxpooling':
+            self.conv1 = nn.Conv2d(in_channels, in_channels, 
+                                   kernel_size, padding=int((kernel_size - 1) / 2))
+            self.conv2 = nn.Conv2d(in_channels, in_channels, 
+                                   kernel_size, padding=int((kernel_size - 1) / 2))
+            self.conv3 = nn.Conv2d(in_channels, in_channels, 
+                                   kernel_size, padding=int((kernel_size - 1) / 2)) 
+        else:
+            raise ValueError(f'Unknown downsampling type {self.downsampling} found!')
         
-        # Decoder (U-Net like)
-        d1 = self.decoders[0](p2)
-        d2 = self.decoders[1](nn.functional.interpolate(d1, scale_factor=2, mode='nearest'))
-        d3 = self.decoders[2](nn.functional.interpolate(d2, scale_factor=2, mode='nearest'))
+    def dwt_downsampling(self, feature):
+        coeffs_real = dwt2(feature.real, wavelet='haar')
+        coeffs_imag = dwt2(feature.imag, wavelet='haar')
+        _, (lh_real, hl_real, hh_real) = coeffs_real
+        _, (lh_imag, hl_imag, hh_imag) = coeffs_imag
+
+        details_real = torch.cat([lh_real, hl_real, hh_real], 1)
+        details_imag = torch.cat([lh_imag, hl_imag, hh_imag], 1)
         
-        # Final output
-        output = self.output_conv(nn.functional.interpolate(d3, size=x.shape[-2:], mode='bilinear', align_corners=False))
-        return output
+        return torch.complex(details_real, details_imag)
+    
+    def maxpooling_downsampling(self, feature):
+        feature_real = F.max_pool2d(feature.real, kernel_size=5, stride=1, padding=2)
+        feature_imag = F.max_pool2d(feature.imag, kernel_size=5, stride=1, padding=2)
+
+        return torch.complex(feature_real, feature_imag)
+    
+    def forward(self, feature):
+        if self.downsampling == 'dwt':
+            feature_down1 = self.dwt_downsampling(feature)
+            feature_conv1_r = self.conv1(feature_down1.real)
+            feature_conv1_i = self.conv1(feature_down1.imag)
+            feature_conv1 = torch.complex(feature_conv1_r, feature_conv1_i)
+            out = torch.cat([feature, feature_conv1], 1)
+
+            feature_down2 = self.dwt_downsampling(feature_down1)
+            feature_conv2_r = self.conv2(feature_down2.real)
+            feature_conv2_i = self.conv2(feature_down2.imag)
+            feature_conv2 = torch.complex(feature_conv2_r, feature_conv2_i)
+            out = torch.cat([out, feature_conv2], 1)
+
+            feature_down3 = self.dwt_downsampling(feature_down2)
+            feature_conv3_r = self.conv3(feature_down3.real)
+            feature_conv3_i = self.conv3(feature_down3.imag)
+            feature_conv3 = torch.complex(feature_conv3_r, feature_conv3_i)
+            out = torch.cat([out, feature_conv3], 1)
+        else:
+            feature_down1 = self.maxpooling_downsampling(feature)
+            feature_conv1_r = self.conv1(feature_down1.real)
+            feature_conv1_i = self.conv1(feature_down1.imag)
+            feature_conv1 = torch.complex(feature_conv1_r, feature_conv1_i)
+            out = torch.cat([feature, feature_conv1], 1)
+
+            feature_down2 = self.maxpooling_downsampling(feature_down1)
+            feature_conv2_r = self.conv2(feature_down2.real)
+            feature_conv2_i = self.conv2(feature_down2.imag)
+            feature_conv2 = torch.complex(feature_conv2_r, feature_conv2_i)
+            out = torch.cat([out, feature_conv2], 1)
+
+            feature_down3 = self.maxpooling_downsampling(feature_down2)
+            feature_conv3_r = self.conv3(feature_down3.real)
+            feature_conv3_i = self.conv3(feature_down3.imag)
+            feature_conv3 = torch.complex(feature_conv3_r, feature_conv3_i)
+            out = torch.cat([out, feature_conv3], 1)
+            
+        return out

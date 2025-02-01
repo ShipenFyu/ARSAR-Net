@@ -134,7 +134,6 @@ class ReconstructionLayer(nn.Module):
         '''
         rec_echo = torch.matmul(self.up_matrix, echo)
         echo_fa = fftshift(fft(rec_echo, dim=1, norm='ortho'), dim=1)
-        echo_fa = fftshift(echo_fa, dim=1)
         echo_fa = echo_fa * self.operator['sc'].to(self.device)
         echo_far = fftshift(fft(echo_fa, dim=2, norm='ortho'), dim=2)
         echo_far = echo_far * self.operator['rc'].to(self.device)
