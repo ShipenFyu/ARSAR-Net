@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from torchvision.models import resnet18, resnet34, resnet50
 from torchvision.models import ResNet18_Weights, ResNet34_Weights, ResNet50_Weights
 from torch.fft import fft, ifft, fftshift, ifftshift
-from pywt import dwt2
+from pytorch_wavelets import DWTForward
 
 
 class ARSARNet(nn.Module):
@@ -460,7 +460,7 @@ class ScaleFusionLayer(nn.Module):
     '''
     Referred to "RefineNet: Multi-Path Refinement Networks for High-Resolution Semantic Segmentation"
     Backbone: ResNet50 with pretrain, parameters: 1.7B(1,715,560,384)
-              ResNet34 with pretrain
+              ResNet34 with pretrain, parameters: 319M(319,373,365)
     '''
     def __init__(self, in_channels, kernel_size, net='resnet34'):
         super(ScaleFusionLayer, self).__init__()
@@ -504,11 +504,8 @@ class ScaleFusionLayer(nn.Module):
         self.fb1 = FusionBlock(channel_list[1], channel_list[2], kernel_size)
         self.fb0 = FusionBlock(channel_list[0], channel_list[1], kernel_size)
 
-        self.chain = ChainedHaarSampling(channel_list[0], kernel_size, 
-                                         downsampling='maxpooling')
-
         self.out = nn.Sequential(
-            nn.Conv2d(channel_list[0] * 4, channel_list[0], kernel_size=3, padding=1),
+            nn.Conv2d(channel_list[0], channel_list[0], kernel_size=3, padding=1),
             nn.BatchNorm2d(channel_list[0]),
             nn.ReLU(inplace=False),
             nn.Conv2d(channel_list[0], in_channels, kernel_size=1, bias=False),
@@ -544,9 +541,7 @@ class ScaleFusionLayer(nn.Module):
         fusion1 = self.fb1(ru1, fusion2)  # channel: 64, 256->256, size = 256
         fusion0 = self.fb0(ru0, fusion1)  # channel: 3, 64->3, size = 512
 
-        sampler = self.chain(fusion0)
-
-        output = self.layer_forwrd(self.out, sampler)
+        output = self.layer_forwrd(self.out, fusion0)
         result = torch.squeeze(output, 1)
 
         return result
@@ -594,21 +589,25 @@ class FusionBlock(nn.Module):
     def __init__(self, in_channels, scaled_channels, kernel_size, scale_factor=2):
         super(FusionBlock, self).__init__()
         self.scale_factor = scale_factor
+        self.haar = ChainedHaarSampling(in_channels, kernel_size)
         self.conv_l = nn.Conv2d(in_channels, in_channels, kernel_size, 
                                 padding=int((kernel_size - 1) / 2), bias=False)
         self.conv_s = nn.Conv2d(scaled_channels, scaled_channels, kernel_size, 
                                 padding=int((kernel_size - 1) / 2), bias=False)
-
-        self.conv = nn.Conv2d(in_channels + scaled_channels, in_channels, kernel_size=1)
+        self.conv = nn.Conv2d(in_channels * 5 + scaled_channels, in_channels, kernel_size=1)
         self.bn = nn.BatchNorm2d(in_channels)
         self.relu = nn.ReLU(inplace=False)
     
     def forward(self, feature, feature_s):
+        haar_feature = self.haar(feature)  # size -> size/2, channels = in_channels * 4 
         real_feature = self.conv_l(feature.real)
         imag_feature = self.conv_l(feature.imag)
 
         real_feature_s = self.conv_s(feature_s.real)
         imag_feature_s = self.conv_s(feature_s.imag)
+
+        real_feature_s = torch.cat([real_feature_s, haar_feature.real], 1) 
+        imag_feature_s = torch.cat([imag_feature_s, haar_feature.imag], 1)
         real_interp = F.interpolate(real_feature_s, scale_factor=self.scale_factor, 
                                     mode='bilinear', align_corners=True)
         imag_interp = F.interpolate(imag_feature_s, scale_factor=self.scale_factor, 
@@ -628,79 +627,48 @@ class FusionBlock(nn.Module):
 
 
 class ChainedHaarSampling(nn.Module):
-    def __init__(self, in_channels, kernel_size, downsampling='maxpooling'):
+    def __init__(self, in_channels, kernel_size):
         super(ChainedHaarSampling, self).__init__()
-        self.downsampling = downsampling
-        if self.downsampling == 'dwt':
-            self.conv1 = nn.Conv2d(in_channels * 3, in_channels, 
-                                kernel_size, padding=int((kernel_size - 1) / 2))
-            self.conv2 = nn.Conv2d(in_channels * 3, in_channels, 
-                                kernel_size, padding=int((kernel_size - 1) / 2))
-            self.conv3 = nn.Conv2d(in_channels * 3, in_channels, 
-                                kernel_size, padding=int((kernel_size - 1) / 2))
-        elif self.downsampling == 'maxpooling':
-            self.conv1 = nn.Conv2d(in_channels, in_channels, 
-                                   kernel_size, padding=int((kernel_size - 1) / 2))
-            self.conv2 = nn.Conv2d(in_channels, in_channels, 
-                                   kernel_size, padding=int((kernel_size - 1) / 2))
-            self.conv3 = nn.Conv2d(in_channels, in_channels, 
-                                   kernel_size, padding=int((kernel_size - 1) / 2)) 
-        else:
-            raise ValueError(f'Unknown downsampling type {self.downsampling} found!')
+        self.conv1 = nn.Conv2d(in_channels, in_channels, 
+                               kernel_size, padding=int((kernel_size - 1) / 2))
+        self.conv2 = nn.Conv2d(in_channels, in_channels, 
+                               kernel_size, padding=int((kernel_size - 1) / 2))
+        self.conv3 = nn.Conv2d(in_channels, in_channels, 
+                               kernel_size, padding=int((kernel_size - 1) / 2))
+        self.conv4 = nn.Conv2d(in_channels, in_channels, 
+                               kernel_size, padding=int((kernel_size - 1) / 2))
         
     def dwt_downsampling(self, feature):
-        coeffs_real = dwt2(feature.real, wavelet='haar')
-        coeffs_imag = dwt2(feature.imag, wavelet='haar')
-        _, (lh_real, hl_real, hh_real) = coeffs_real
-        _, (lh_imag, hl_imag, hh_imag) = coeffs_imag
-
-        details_real = torch.cat([lh_real, hl_real, hh_real], 1)
-        details_imag = torch.cat([lh_imag, hl_imag, hh_imag], 1)
+        dwt = DWTForward(J=3, mode='zero', wave='haar')
+        coeffs_real = dwt(feature.real)
+        coeffs_imag = dwt(feature.imag)
+        ll_real, h_real = coeffs_real
+        ll_imag, h_imag = coeffs_imag
+        h_real, h_imag = h_real[0], h_imag[0]
         
-        return torch.complex(details_real, details_imag)
-    
-    def maxpooling_downsampling(self, feature):
-        feature_real = F.max_pool2d(feature.real, kernel_size=5, stride=1, padding=2)
-        feature_imag = F.max_pool2d(feature.imag, kernel_size=5, stride=1, padding=2)
+        lh_real, hl_real, hh_real = h_real[:,:,0,:,:], h_real[:,:,1,:,:], h_real[:,:,2,:,:]
+        lh_imag, hl_imag, hh_imag = h_imag[:,:,0,:,:], h_imag[:,:,1,:,:], h_imag[:,:,2,:,:]
 
-        return torch.complex(feature_real, feature_imag)
+        ll = torch.complex(ll_real, ll_imag)
+        lh = torch.complex(lh_real, lh_imag)
+        hl = torch.complex(hl_real, hl_imag)
+        hh = torch.complex(hh_real, hh_imag)
+        
+        return ll, lh, hl, hh
+    
+    def layer_forwrd(self, layer: nn.Module, feature):
+        real_feature = layer(feature.real)
+        imag_feature = layer(feature.imag)
+
+        return torch.complex(real_feature, imag_feature)
     
     def forward(self, feature):
-        if self.downsampling == 'dwt':
-            feature_down1 = self.dwt_downsampling(feature)
-            feature_conv1_r = self.conv1(feature_down1.real)
-            feature_conv1_i = self.conv1(feature_down1.imag)
-            feature_conv1 = torch.complex(feature_conv1_r, feature_conv1_i)
-            out = torch.cat([feature, feature_conv1], 1)
+        ll, lh, hl, hh = self.dwt_downsampling(feature)
+        ll_conv = self.layer_forwrd(self.conv1, ll)  # in_channels
+        lh_conv = self.layer_forwrd(self.conv2, lh)
+        hl_conv = self.layer_forwrd(self.conv3, hl)
+        hh_conv = self.layer_forwrd(self.conv4, hh)
 
-            feature_down2 = self.dwt_downsampling(feature_down1)
-            feature_conv2_r = self.conv2(feature_down2.real)
-            feature_conv2_i = self.conv2(feature_down2.imag)
-            feature_conv2 = torch.complex(feature_conv2_r, feature_conv2_i)
-            out = torch.cat([out, feature_conv2], 1)
+        out = torch.cat([ll_conv, lh_conv, hl_conv, hh_conv], 1)  # in_channels * 4
 
-            feature_down3 = self.dwt_downsampling(feature_down2)
-            feature_conv3_r = self.conv3(feature_down3.real)
-            feature_conv3_i = self.conv3(feature_down3.imag)
-            feature_conv3 = torch.complex(feature_conv3_r, feature_conv3_i)
-            out = torch.cat([out, feature_conv3], 1)
-        else:
-            feature_down1 = self.maxpooling_downsampling(feature)
-            feature_conv1_r = self.conv1(feature_down1.real)
-            feature_conv1_i = self.conv1(feature_down1.imag)
-            feature_conv1 = torch.complex(feature_conv1_r, feature_conv1_i)
-            out = torch.cat([feature, feature_conv1], 1)
-
-            feature_down2 = self.maxpooling_downsampling(feature_down1)
-            feature_conv2_r = self.conv2(feature_down2.real)
-            feature_conv2_i = self.conv2(feature_down2.imag)
-            feature_conv2 = torch.complex(feature_conv2_r, feature_conv2_i)
-            out = torch.cat([out, feature_conv2], 1)
-
-            feature_down3 = self.maxpooling_downsampling(feature_down2)
-            feature_conv3_r = self.conv3(feature_down3.real)
-            feature_conv3_i = self.conv3(feature_down3.imag)
-            feature_conv3 = torch.complex(feature_conv3_r, feature_conv3_i)
-            out = torch.cat([out, feature_conv3], 1)
-            
         return out

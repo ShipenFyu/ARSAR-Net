@@ -1,11 +1,8 @@
 import os
 import argparse
-import warnings
-from typing import Iterable
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, TensorDataset
 import matplotlib.pyplot as plt
 from datetime import datetime
 from tqdm import tqdm
@@ -13,37 +10,34 @@ from tqdm import tqdm
 from utils.observation_matrix import random_sampling_create
 from utils.evaluate import range_cut, psnr_evaluate, ssim_evaluate, aliasing_construct
 from utils.config import processor
-from models.arsar_net import ARSARNet
-from models.pnp_net import NonInversionADMMPnPNet
+from models.solver import ista_l1_one_object, admm_tv_one_object
 
 
 def get_args():
-    parser = argparse.ArgumentParser(description='ARSAR-Net Testing')
+    parser = argparse.ArgumentParser(description='Explicit Regularization Testing')
     parser.add_argument('--tst_dataset', default='./data/concat', help='Testing dataset directory')
-    parser.add_argument('--weight', default='/weights/harbour/2025_01_22/downsample_0.5_epochs_55_17_38_35.pt')
-    parser.add_argument('--device', default='cuda:4', help='The device index used in testing')
-    parser.add_argument('--network', default='pnp', help='Backbone network pnp or arsar')
-    parser.add_argument('--regularization', default='unet', help='The regularization type to PnP network')
-    parser.add_argument('--batch_size', default=2, type=int, help='Batch size for testing')
-    parser.add_argument('--layer_num', default=8, type=int, help='Net block num in iteration')
-    parser.add_argument('--internal_iteration', default=6, type=int, help='ADMM-Net z block iteration num')
-    parser.add_argument('--down_sampling_rate', default=0.5, type=float, help='Azimuth down-sampling rate')
+    parser.add_argument('--device', default='cuda:0', help='The device index used in testing')
+    parser.add_argument('--regularization', default='l1', help='The regularization type like l1, tv')
+    parser.add_argument('--down_rate', default=0.5, type=float, help='Azimuth down-sampling rate')
     args = parser.parse_args()
 
     return args
 
 
-def test_model(model: torch.nn.Module, test_loader: Iterable, 
-         device: torch.device, batch_size: int, test_image
-         ):
+def test_algorithm(test_image, test_echo, regular, down_matrix, up_matrix, device_index):
     rec = np.zeros(test_image.shape ,dtype=np.complex64)
+    image_example = rec[0]
 
     print('SAR Reconstruction started at', datetime.now().strftime("%H:%M:%S"))
-    with torch.no_grad():
-        for i, clip in enumerate(tqdm(test_loader, desc=f'Reconstruction')):
-                _, echo = clip[0].to(device), clip[1].to(device)
-                output = model(echo)
-                rec[i * batch_size: (i + 1) * batch_size, :, :] = output.cpu().numpy()
+    for i, echo in tqdm(enumerate(test_echo), desc=f'Reconstruction'):
+        if regular == 'l1':
+            rst = ista_l1_one_object(image_example, echo, processor, 
+                                     down_matrix, up_matrix, device_index)
+        elif regular == 'tv':
+            rst = admm_tv_one_object(image_example, echo, processor, up_matrix, device_index)
+        else:
+            raise ValueError('Unknown regularization type found!')
+        rec[i] = rst.cpu().numpy()
     print('Reconstruction completed at', datetime.now().strftime("%H:%M:%S"))
 
     return rec
@@ -152,65 +146,23 @@ def figure_generate(output_dict, index, down_rate):
 
 
 def main(args):
-    weight_path = args.weight
     device_index = args.device
-    network = args.network
-    batch_size = args.batch_size
-    down_rate = args.down_sampling_rate
+    regular = args.regularization
+    down_rate = args.down_rate
 
-    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
-    num_workers = 0
-
-    _, up_matrix = random_sampling_create(down_rate, device_index)
+    down_matrix, up_matrix = random_sampling_create(down_rate, device_index)
 
     test_file_path = [os.path.join(args.tst_dataset, 'image_test.npy'), 
                       os.path.join(args.tst_dataset, f'echo_{int(down_rate * 100)}_test.npy')]
 
     test_image_array = np.load(test_file_path[0])
     test_echo_array = np.load(test_file_path[1])
-    test_image = torch.tensor(test_image_array, dtype=torch.complex64).to(device)
-    test_echo = torch.tensor(test_echo_array, dtype=torch.complex64).to(device)
-
-    test_dataset = TensorDataset(test_image, test_echo)
-
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    test_echo = torch.tensor(test_echo_array, dtype=torch.complex64)
     print('DataLoader Finished!')
 
-    if network == 'arsar':
-        model = ARSARNet(
-            device_index, 
-            processor, 
-            up_matrix, 
-            args.layer_num, 
-            args.internal_iteration,
-            args.regularization,
-            ).to(device)
-    elif network == 'pnp':
-        model = NonInversionADMMPnPNet(
-            device_index, 
-            processor, 
-            up_matrix, 
-            args.layer_num, 
-            args.internal_iteration,
-            args.regularization,
-            ).to(device)
-    else:
-        raise ValueError(f'unknown network name {network} found!')
-    print('Model Initialized!')
-
-    split_path = weight_path.split('/')[-4:]
-    weight_path = os.path.join(split_path[0], split_path[1], split_path[2], split_path[3])
-
-    with warnings.catch_warnings():
-        # avoid FutureWarning for 'weights_only=False'
-        warnings.simplefilter("ignore", category=FutureWarning)
-        model.load_state_dict(torch.load(weight_path)['model_state_dict'])
-    model.eval()
-    print('Weight File Loaded!')
-
     index = [i for i in range(8)]
-    rec = test_model(model, test_loader, device, 
-                     batch_size, test_image_array)
+    rec = test_algorithm(test_image_array, test_echo, regular, 
+                         down_matrix, up_matrix, device_index)
     output_dict = pre_process(rec, test_echo_array, test_image_array, up_matrix)
     figure_generate(output_dict, index, down_rate)
 
