@@ -32,23 +32,41 @@ class NRMSE(nn.Module):
         nrmse = self.mse_loss(output, target) / torch.sqrt(torch.mean(scale))
 
         return nrmse
+    
+
+class ComplexLoss(nn.Module):
+    def __init__(self, batch_size):
+        super(ComplexLoss, self).__init__()
+        self.batch_size = batch_size
+
+    def forward(self, output, target):
+        residual = output - target
+        loss = 0
+        for index in range(self.batch_size):
+            residual_norm = torch.linalg.matrix_norm(residual[index], ord=2)
+            target_norm = torch.linalg.matrix_norm(target[index], ord=2)
+            loss += residual_norm / target_norm 
+        loss_average = loss / self.batch_size
+
+        return loss_average
 
 
 def get_args():
     parser = argparse.ArgumentParser(description='ARSAR-Net Training')
-    parser.add_argument('--trn_dataset', default='./data/train', help='Training dataset directory')
+    parser.add_argument('--trn_dataset', default='./data/concat', help='Training dataset directory')
     parser.add_argument('--val_size', default=400, type=int, help='Validation dataset size')
-    parser.add_argument('--device', default='cuda:1', help='The device index used in training')
-    parser.add_argument('--network', default='pnp', help='Backbone network pnp or arsar')
-    parser.add_argument('--regularization', default='unet', help='The regularization type to PnP network')
-    parser.add_argument('--epochs', default=120, type=int, help='Epochs')
+    parser.add_argument('--device', default='cuda:0', help='The device index used in training')
+    parser.add_argument('--network', default='arsar', help='Backbone network (pnp or arsar)')
+    parser.add_argument('--criterion', default='norm', help='Criterion type (mse or norm)')
+    parser.add_argument('--regularization', default='haar', help='The regularization type in ARSAR-Net')
+    parser.add_argument('--epochs', default=100, type=int, help='Epochs')
     parser.add_argument('--nsave', default=1, type=int, help='Save model after every nSave epoch')
-    parser.add_argument('--batch_size', default=2, type=int, help='Batch size for training')
-    parser.add_argument('--lr', default=2e-3, type=float, help='Initial learning rate')
-    parser.add_argument('--layer_num', default=8, type=int, help='Net block num in iteration')
+    parser.add_argument('--batch_size', default=4, type=int, help='Batch size for training')
+    parser.add_argument('--lr', default=5e-4, type=float, help='Initial learning rate')
+    parser.add_argument('--layer_num', default=9, type=int, help='Net block num in iteration')
     parser.add_argument('--internal_iteration', default=6, type=int, help='ADMM-Net z block iteration num')
     parser.add_argument('--checkpoint', default=None, help='Continue model training')
-    parser.add_argument('--down_rate', default=0.50, type=float, help='Azimuth down-sampling rate')
+    parser.add_argument('--down_rate', default=0.5, type=float, help='Azimuth down-sampling rate')
     args = parser.parse_args()
 
     return args
@@ -80,13 +98,15 @@ def train_epochs(model: nn.Module, criterion: nn.Module,
           train_loader: Iterable, val_loader: Iterable, 
           optimizer: optim.Optimizer, device: torch.device, 
           epochs: int, batch_size: int, down_rate: float, 
-          regular: str, weights_dir: str,
+          label: str, regular: str, weights_dir: str,
           logger, checkpoint=None
           ):
     log_training_info(logger, 'Training started')
-    log_training_info(logger, f"Parameters: Epochs: {epochs}, Batch Size: {batch_size},"
-                              f" Learning Rate: {args.lr}, Regularization: {regular}")
-    log_training_info(logger, f"Layer_num: {args.layer_num}, Internal_iteration: {args.internal_iteration}")
+    log_training_info(logger, f"Parameters: Epochs: {epochs}, Batch Size: {batch_size}, "
+                              f"Learning Rate: {args.lr}, Regularization: {regular}")
+    log_training_info(logger, f"Scene: {label}, criterion: {args.criterion}")
+    log_training_info(logger, f"Layer_num: {args.layer_num}, "
+                              f"Internal_iteration(if recurrent): {args.internal_iteration}")
     log_training_info(logger, f"Downsampling Rate: {int(down_rate * 100)}percent")
     log_training_info(logger, f"Training started at {datetime.now().strftime('%Y %m %d-%H:%M:%S')}")
     start_time = time.time()
@@ -148,6 +168,7 @@ def train_epochs(model: nn.Module, criterion: nn.Module,
 def main(args):
     device_index = args.device
     network = args.network
+    criterion_type = args.criterion
     regular = args.regularization
     epochs = args.epochs
     batch_size = args.batch_size
@@ -179,7 +200,7 @@ def main(args):
     print('DataLoader Finished!')
 
     label = args.trn_dataset.split('/')[-1]
-    weights_dir = os.path.join('./weights', label, datetime.now().strftime("%Y_%m_%d"))
+    weights_dir = os.path.join('../Dataset/FuShiping/weights', label, datetime.now().strftime("%Y_%m_%d"))
     if not os.path.exists(weights_dir):
         os.makedirs(weights_dir)
 
@@ -202,16 +223,21 @@ def main(args):
             regular,
             ).to(device)
     else:
-        raise ValueError(f'unknown network name {network} found!')
+        raise ValueError(f'Unknown network name found: {network}!')
     print('Model Initialized!')
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
-    criterion = NRMSE()
+    if criterion_type == 'mse':
+        criterion = NRMSE()
+    elif criterion_type == 'norm':
+        criterion = ComplexLoss(batch_size)
+    else:
+        raise ValueError(f'Unknown criterion type found: {criterion_type}!')
     logger = configure_logging(network, epochs)
 
     train_epochs(model, criterion, train_loader, val_loader, 
                  optimizer, device, epochs, batch_size, down_rate, 
-                 regular, weights_dir, logger, checkpoint)
+                 label, regular, weights_dir, logger, checkpoint)
 
 
 if __name__ == '__main__':

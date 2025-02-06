@@ -93,7 +93,7 @@ class BasicBlock(nn.Module):
             self.regular_layer = regularization[regular](in_channels, base_channels, kernel_size, 
                                                          iteration)
         else:
-            raise ValueError(f'unknown regularization {regular} found!')
+            raise ValueError(f'unknown regularization found: {regular}!')
     
     def forward(self, input_dict):
         input = input_dict['input']

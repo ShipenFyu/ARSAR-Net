@@ -97,7 +97,7 @@ class BasicBlock(nn.Module):
         elif regular == 'haar':
             self.regular_layer = regularization[regular](in_channels, kernel_size)
         else:
-            raise ValueError(f'Nnknown regularization {regular} found!')
+            raise ValueError(f'Nnknown regularization found: {regular}!')
     
     def forward(self, input_dict):
         input = input_dict['input']
@@ -474,7 +474,7 @@ class ScaleFusionLayer(nn.Module):
             resnet = resnet18(weights=ResNet18_Weights.DEFAULT)
             channel_list=[3, 64, 64, 128, 256, 512]
         else:
-            raise ValueError(f'Unknown ResNet type {net} found!')
+            raise ValueError(f'Unknown ResNet type found: {net}!')
         
         self.initial = nn.Conv2d(in_channels, 3, kernel_size=1)
 

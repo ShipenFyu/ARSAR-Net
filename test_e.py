@@ -36,7 +36,7 @@ def test_algorithm(test_image, test_echo, regular, down_matrix, up_matrix, devic
         elif regular == 'tv':
             rst = admm_tv_one_object(image_example, echo, processor, up_matrix, device_index)
         else:
-            raise ValueError('Unknown regularization type found!')
+            raise ValueError(f'Unknown regularization type found: {regular}!')
         rec[i] = rst.cpu().numpy()
     print('Reconstruction completed at', datetime.now().strftime("%H:%M:%S"))
 
