@@ -20,8 +20,8 @@ from models.pnp_net import NonInversionADMMPnPNet
 def get_args():
     parser = argparse.ArgumentParser(description='ARSAR-Net Testing')
     parser.add_argument('--tst_dataset', default='./data/concat', help='Testing dataset directory')
-    parser.add_argument('--weight', default="/media/Disk1/FuShiping/weights/concat/2025_02_05/downsample_0.75_epochs_95_17_12_15.pt")
-    parser.add_argument('--device', default='cuda:0', help='The device index used in testing')
+    parser.add_argument('--weight', default="/media/Disk1/FuShiping/weights/concat/2025_02_06/downsample_0.5_epochs_95_23_08_25.pt")
+    parser.add_argument('--device', default='cuda:5', help='The device index used in testing')
     parser.add_argument('--network', default='arsar', help='Backbone network (pnp or arsar)')
     parser.add_argument('--regularization', default='haar', help='The regularization type in ARSAR-Net')
     parser.add_argument('--batch_size', default=4, type=int, help='Batch size for testing')
@@ -70,11 +70,11 @@ def pre_process(rec, echo, img, up_matrix):
 
     alias_psnr = psnr_evaluate(img_norm, aliasing_norm)
 
-    psnr_mean = np.mean(rec_psnr)
-    ssim_mean = np.mean(rec_ssim)
+    psnr_m = np.mean(rec_psnr)
+    ssim_m = np.mean(rec_ssim)
 
-    print(f"Mean PSNR of reconstructed images: {psnr_mean:.6f}")
-    print(f"Mean SSIM of reconstructed images: {ssim_mean:.6f}")
+    print(f"Mean PSNR of reconstructed images: {psnr_m:.6f}")
+    print(f"Mean SSIM of reconstructed images: {ssim_m:.6f}")
 
     output_dict['echo'] = echo_norm
     output_dict['img'] = img_norm
@@ -158,6 +158,7 @@ def main(args):
     batch_size = args.batch_size
     down_rate = args.down_rate
 
+    torch.cuda.set_device(device_index)
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     num_workers = 0
 
@@ -195,7 +196,7 @@ def main(args):
             args.regularization,
             ).to(device)
     else:
-        raise ValueError(f'unknown network name found: {network}!')
+        raise ValueError(f'Unknown network name found: {network}!')
     print('Model Initialized!')
 
     split_path = weight_path.split('/')[-4:]

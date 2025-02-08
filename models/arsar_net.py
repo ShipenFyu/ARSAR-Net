@@ -95,7 +95,7 @@ class BasicBlock(nn.Module):
         elif regular == 'pretrain':
             self.regular_layer = regularization[regular](in_channels, kernel_size)
         elif regular == 'haar':
-            self.regular_layer = regularization[regular](in_channels, kernel_size)
+            self.regular_layer = regularization[regular](in_channels, kernel_size, device_index)
         else:
             raise ValueError(f'Nnknown regularization found: {regular}!')
     
@@ -462,8 +462,9 @@ class ScaleFusionLayer(nn.Module):
     Backbone: ResNet50 with pretrain, parameters: 1.7B(1,715,560,384)
               ResNet34 with pretrain, parameters: 319M(319,373,365)
     '''
-    def __init__(self, in_channels, kernel_size, net='resnet34'):
+    def __init__(self, in_channels, kernel_size, device_index, net='resnet34'):
         super(ScaleFusionLayer, self).__init__()
+        self.device = torch.device(device_index if torch.cuda.is_available() else "cpu")
         if net == 'resnet50':
             resnet = resnet50(weights=ResNet50_Weights.DEFAULT)
             channel_list=[3, 64, 256, 512, 1024, 2048]
@@ -474,7 +475,7 @@ class ScaleFusionLayer(nn.Module):
             resnet = resnet18(weights=ResNet18_Weights.DEFAULT)
             channel_list=[3, 64, 64, 128, 256, 512]
         else:
-            raise ValueError(f'Unknown ResNet type found: {net}!')
+            raise ValueError(f'Unknown ResNet type {net} found!')
         
         self.initial = nn.Conv2d(in_channels, 3, kernel_size=1)
 
@@ -498,11 +499,11 @@ class ScaleFusionLayer(nn.Module):
         self.rcu4 = ResidualUnit(channel_list[4], kernel_size)
         self.rcu5 = ResidualUnit(channel_list[5], kernel_size)
 
-        self.fb4 = FusionBlock(channel_list[4], channel_list[5], kernel_size)
-        self.fb3 = FusionBlock(channel_list[3], channel_list[4], kernel_size)
-        self.fb2 = FusionBlock(channel_list[2], channel_list[3], kernel_size)
-        self.fb1 = FusionBlock(channel_list[1], channel_list[2], kernel_size)
-        self.fb0 = FusionBlock(channel_list[0], channel_list[1], kernel_size)
+        self.fb4 = FusionBlock(channel_list[4], channel_list[5], kernel_size, self.device)
+        self.fb3 = FusionBlock(channel_list[3], channel_list[4], kernel_size, self.device)
+        self.fb2 = FusionBlock(channel_list[2], channel_list[3], kernel_size, self.device)
+        self.fb1 = FusionBlock(channel_list[1], channel_list[2], kernel_size, self.device)
+        self.fb0 = FusionBlock(channel_list[0], channel_list[1], kernel_size, self.device)
 
         self.out = nn.Sequential(
             nn.Conv2d(channel_list[0], channel_list[0], kernel_size=3, padding=1),
@@ -586,10 +587,10 @@ class FusionBlock(nn.Module):
     Multi-resolution feature map fusion block cited from: 
     "RefineNet: Multi-Path Refinement Networks for High-Resolution Semantic Segmentation"
     '''
-    def __init__(self, in_channels, scaled_channels, kernel_size, scale_factor=2):
+    def __init__(self, in_channels, scaled_channels, kernel_size, device, scale_factor=2):
         super(FusionBlock, self).__init__()
         self.scale_factor = scale_factor
-        self.haar = ChainedHaarSampling(in_channels, kernel_size)
+        self.haar = ChainedHaarSampling(in_channels, kernel_size, device)
         self.conv_l = nn.Conv2d(in_channels, in_channels, kernel_size, 
                                 padding=int((kernel_size - 1) / 2), bias=False)
         self.conv_s = nn.Conv2d(scaled_channels, scaled_channels, kernel_size, 
@@ -627,8 +628,9 @@ class FusionBlock(nn.Module):
 
 
 class ChainedHaarSampling(nn.Module):
-    def __init__(self, in_channels, kernel_size):
+    def __init__(self, in_channels, kernel_size, device):
         super(ChainedHaarSampling, self).__init__()
+        self.device = device
         self.conv1 = nn.Conv2d(in_channels, in_channels, 
                                kernel_size, padding=int((kernel_size - 1) / 2))
         self.conv2 = nn.Conv2d(in_channels, in_channels, 
@@ -639,7 +641,7 @@ class ChainedHaarSampling(nn.Module):
                                kernel_size, padding=int((kernel_size - 1) / 2))
         
     def dwt_downsampling(self, feature):
-        dwt = DWTForward(J=3, mode='zero', wave='haar')
+        dwt = DWTForward(J=1, mode='zero', wave='haar').to(self.device)
         coeffs_real = dwt(feature.real)
         coeffs_imag = dwt(feature.imag)
         ll_real, h_real = coeffs_real

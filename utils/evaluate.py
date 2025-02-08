@@ -35,13 +35,24 @@ def psnr_evaluate(image, rec):
     image = np.asarray(image)
     rec = np.asarray(rec)
     sqrError = np.abs(image - rec) ** 2
-    N = np.prod(image.shape[-2:])
-    mse = np.sum(sqrError, axis=(-1, -2)) / N
+    n = np.prod(image.shape[-2:])
+    mse = np.sum(sqrError, axis=(-1, -2)) / n
 
     maxval = np.max(image, axis=(-1, -2)) + 1e-15
     psnr = 10 * np.log10(maxval ** 2 / (mse + 1e-15))
     
     return psnr
+
+
+def psnr_mean(psnr):
+    psnr_list = []
+    for index in range(len(psnr)):
+        psnr_p = psnr[index] / 10
+        psnr_p = np.power(10, psnr_p)
+        psnr_list.append(psnr_p)
+    psnr_m = np.mean(psnr_list)
+
+    return 10 * np.log10(psnr_m)   
 
 
 def ssim_evaluate(image, rec, k1=0.01, k2=0.03, L=255, sigma=1.5):
@@ -72,8 +83,8 @@ def ssim_evaluate(image, rec, k1=0.01, k2=0.03, L=255, sigma=1.5):
     return ssim_values
 
 
-def aliasing_construct(echo, down_matrix, operator):
-    rec_echo = np.einsum('ij,bjk->bik', down_matrix, echo)
+def aliasing_construct(echo, up_matrix, operator):
+    rec_echo = np.einsum('ij,bjk->bik', up_matrix, echo)
     echo_fa = fftshift(fft(rec_echo, axis=1, norm='ortho'), axes=1)
     echo_fa = echo_fa * operator['sc'].numpy()
     echo_far = fftshift(fft(echo_fa, axis=2, norm='ortho'), axes=2)
