@@ -20,8 +20,8 @@ from models.pnp_net import NonInversionADMMPnPNet
 def get_args():
     parser = argparse.ArgumentParser(description='ARSAR-Net Testing')
     parser.add_argument('--tst_dataset', default='./data/concat', help='Testing dataset directory')
-    parser.add_argument('--weight', default="/media/Disk1/FuShiping/weights/concat/2025_02_06/downsample_0.5_epochs_95_23_08_25.pt")
-    parser.add_argument('--device', default='cuda:5', help='The device index used in testing')
+    parser.add_argument('--weight', default="/media/Disk1/FuShiping/weights/concat/2025_02_05/downsample_0.5_epochs_97_17_29_05.pt")
+    parser.add_argument('--device', default='cuda:3', help='The device index used in testing')
     parser.add_argument('--network', default='arsar', help='Backbone network (pnp or arsar)')
     parser.add_argument('--regularization', default='haar', help='The regularization type in ARSAR-Net')
     parser.add_argument('--batch_size', default=4, type=int, help='Batch size for testing')
@@ -36,14 +36,14 @@ def get_args():
 def test_model(model: torch.nn.Module, test_loader: Iterable, 
          device: torch.device, batch_size: int, test_image
          ):
-    rec = np.zeros(test_image.shape ,dtype=np.complex64)
+    rec = torch.zeros_like(test_image, dtype=torch.complex64).to(device)
 
     print('SAR Reconstruction started at', datetime.now().strftime("%H:%M:%S"))
     with torch.no_grad():
         for i, clip in enumerate(tqdm(test_loader, desc=f'Reconstruction')):
                 _, echo = clip[0].to(device), clip[1].to(device)
                 output = model(echo)
-                rec[i * batch_size: (i + 1) * batch_size, :, :] = output.cpu().numpy()
+                rec[i * batch_size: (i + 1) * batch_size, :, :] = output
     print('Reconstruction completed at', datetime.now().strftime("%H:%M:%S"))
 
     return rec
@@ -51,12 +51,12 @@ def test_model(model: torch.nn.Module, test_loader: Iterable,
 
 def pre_process(rec, echo, img, up_matrix):
     output_dict = {}
-    aliasing = aliasing_construct(echo, up_matrix.cpu().numpy(), processor)
+    aliasing = aliasing_construct(echo, up_matrix, processor)
 
-    rec = np.abs(rec)
-    echo = np.abs(echo)
-    aliasing = np.abs(aliasing)
-    img = np.abs(img)
+    rec = torch.abs(rec)
+    echo = torch.abs(echo)
+    aliasing = torch.abs(aliasing)
+    img = torch.abs(img)
 
     # range cut
     rec_norm = range_cut(rec)
@@ -66,22 +66,24 @@ def pre_process(rec, echo, img, up_matrix):
 
     # PSNR and SSIM
     rec_psnr = psnr_evaluate(img_norm, rec_norm)
-    rec_ssim = ssim_evaluate(img_norm, rec_norm)
-
     alias_psnr = psnr_evaluate(img_norm, aliasing_norm)
 
-    psnr_m = np.mean(rec_psnr)
+    img_norm = img_norm.cpu().numpy()
+    rec_norm = rec_norm.cpu().numpy()
+    rec_ssim = ssim_evaluate(img_norm, rec_norm)
+
+    psnr_m = torch.mean(rec_psnr)
     ssim_m = np.mean(rec_ssim)
 
     print(f"Mean PSNR of reconstructed images: {psnr_m:.6f}")
     print(f"Mean SSIM of reconstructed images: {ssim_m:.6f}")
 
-    output_dict['echo'] = echo_norm
+    output_dict['echo'] = echo_norm.cpu().numpy()
     output_dict['img'] = img_norm
-    output_dict['alias'] = aliasing_norm
+    output_dict['alias'] = aliasing_norm.cpu().numpy()
     output_dict['rec'] = rec_norm
-    output_dict['rec_psnr'] = rec_psnr
-    output_dict['alias_psnr'] = alias_psnr
+    output_dict['rec_psnr'] = rec_psnr.cpu().numpy()
+    output_dict['alias_psnr'] = alias_psnr.cpu().numpy()
 
     return output_dict
 
@@ -158,7 +160,6 @@ def main(args):
     batch_size = args.batch_size
     down_rate = args.down_rate
 
-    torch.cuda.set_device(device_index)
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     num_workers = 0
 
@@ -167,10 +168,8 @@ def main(args):
     test_file_path = [os.path.join(args.tst_dataset, 'image_test.npy'), 
                       os.path.join(args.tst_dataset, f'echo_{int(down_rate * 100)}_test.npy')]
 
-    test_image_array = np.load(test_file_path[0])
-    test_echo_array = np.load(test_file_path[1])
-    test_image = torch.tensor(test_image_array, dtype=torch.complex64).to(device)
-    test_echo = torch.tensor(test_echo_array, dtype=torch.complex64).to(device)
+    test_image = torch.tensor(np.load(test_file_path[0]), dtype=torch.complex64).to(device)
+    test_echo = torch.tensor(np.load(test_file_path[1]), dtype=torch.complex64).to(device)
 
     test_dataset = TensorDataset(test_image, test_echo)
 
@@ -200,7 +199,8 @@ def main(args):
     print('Model Initialized!')
 
     split_path = weight_path.split('/')[-4:]
-    weight_path = os.path.join('../Dataset/FuShiping', split_path[0], split_path[1], split_path[2], split_path[3])
+    weight_path = os.path.join('../Dataset/FuShiping', 
+                               split_path[0], split_path[1], split_path[2], split_path[3])
 
     with warnings.catch_warnings():
         # avoid FutureWarning for 'weights_only=False'
@@ -211,8 +211,8 @@ def main(args):
 
     index = [i for i in range(8)]
     rec = test_model(model, test_loader, device, 
-                     batch_size, test_image_array)
-    output_dict = pre_process(rec, test_echo_array, test_image_array, up_matrix)
+                     batch_size, test_image)
+    output_dict = pre_process(rec, test_echo, test_image, up_matrix)
     figure_generate(output_dict, index, down_rate)
 
 

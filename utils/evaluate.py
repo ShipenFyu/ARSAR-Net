@@ -1,61 +1,38 @@
 import numpy as np
-from numpy.fft import fft, ifft, fftshift, ifftshift
+import torch
+import torch.nn.functional as F
 from scipy.ndimage import gaussian_filter
-
-
-def normalize(images):
-    """
-    Perform histogram equalization on images with shape: [batch_size, height, width]
-    """
-    images = np.asarray(images)
-    batch_size, height, width = images.shape
-    equalized_images = np.zeros_like(images, dtype=np.uint8)
-
-    for i in range(batch_size):
-        img = images[i]
-        
-        img_normalized = (img - img.min()) / (img.max() - img.min()) * 255
-        img_normalized = img_normalized.astype(np.uint8)
-        
-        hist, bins = np.histogram(img_normalized.flatten(), bins=256, range=[0, 256])
-        cdf = hist.cumsum()
-        cdf_normalized = cdf / cdf[-1]  # normalize to [0, 1]
-        
-        equalized_img = np.interp(img_normalized.flatten(), bins[:-1], cdf_normalized * 255)
-        equalized_images[i] = equalized_img.reshape(height, width)
-
-    return equalized_images
+from torch.fft import fft, ifft, fftshift, ifftshift
 
 
 def range_cut(image):
-    return np.clip(image, 0, 255)
+    return torch.clamp(image, 0, 255)
 
 
 def psnr_evaluate(image, rec):
-    image = np.asarray(image)
-    rec = np.asarray(rec)
-    sqrError = np.abs(image - rec) ** 2
-    n = np.prod(image.shape[-2:])
-    mse = np.sum(sqrError, axis=(-1, -2)) / n
+    image = torch.as_tensor(image)
+    rec = torch.as_tensor(rec)
+    sqr_error = (image - rec).pow(2)
+    n = image.shape[-1] * image.shape[-2]
+    mse = sqr_error.sum(dim=(-1, -2)) / n
 
-    maxval = np.max(image, axis=(-1, -2)) + 1e-15
-    psnr = 10 * np.log10(maxval ** 2 / (mse + 1e-15))
-    
+    maxval = image.amax(dim=(-1, -2)) + 1e-15
+    psnr = 10 * torch.log10(maxval ** 2 / (mse + 1e-15))
+
     return psnr
 
 
 def psnr_mean(psnr):
-    psnr_list = []
-    for index in range(len(psnr)):
-        psnr_p = psnr[index] / 10
-        psnr_p = np.power(10, psnr_p)
-        psnr_list.append(psnr_p)
-    psnr_m = np.mean(psnr_list)
+    psnr = torch.as_tensor(psnr)
+    psnr_p = 10 ** (psnr / 10)
 
-    return 10 * np.log10(psnr_m)   
+    return 10 * torch.log10(psnr_p.mean())
 
 
 def ssim_evaluate(image, rec, k1=0.01, k2=0.03, L=255, sigma=1.5):
+    '''
+    SSIM evaluation in Numpy with gaussian filter
+    '''
     image = np.asarray(image)
     rec = np.asarray(rec)
     batch_size = image.shape[0]
@@ -83,14 +60,74 @@ def ssim_evaluate(image, rec, k1=0.01, k2=0.03, L=255, sigma=1.5):
     return ssim_values
 
 
+def gaussian_kernel(image, sigma):
+    '''
+    Gaussian filter by Pytorch
+    '''
+    image = image.unsqueeze(0)
+
+    radius = int(4*sigma + 0.5)
+    size = 2 * radius + 1
+    x = torch.arange(-radius, radius+1, dtype=torch.float32, device=image.device)
+    kernel_1d = torch.exp(-x**2 / (2 * sigma**2))
+    kernel_1d = kernel_1d / kernel_1d.sum()
+    
+    kernel_2d = torch.outer(kernel_1d, kernel_1d)
+    kernel_2d = kernel_2d / kernel_2d.sum()
+    
+    padding = radius
+        
+    filtered = F.conv2d(
+        input=image,
+        weight=kernel_2d.view(1, 1, size, size).expand(image.size(1), 1, size, size),
+        padding=padding,
+    )
+    
+    return filtered.squeeze(0)
+
+
+def ssim_evaluate_tensor(image, rec, k1=0.01, k2=0.03, L=255, sigma=1.5):
+    device = image.device
+    image = torch.as_tensor(image, device=device)
+    rec = torch.as_tensor(rec, device=device)
+    
+    C1 = (k1 * L) ** 2
+    C2 = (k2 * L) ** 2
+    
+    batch_size = image.shape[0]
+    ssim_values = torch.zeros(batch_size, device=device)
+    
+    for index in range(batch_size):
+        img1 = image[index]
+        img2 = rec[index]
+
+        mu1 = gaussian_kernel(img1, sigma)
+        mu2 = gaussian_kernel(img2, sigma)
+        
+        sigma1_sq = gaussian_kernel(img1**2, sigma) - mu1**2
+        sigma2_sq = gaussian_kernel(img2**2, sigma) - mu2**2
+        sigma12 = gaussian_kernel(img1 * img2, sigma) - mu1 * mu2
+        
+        numerator = (2 * mu1 * mu2 + C1) * (2 * sigma12 + C2)
+        denominator = (mu1**2 + mu2**2 + C1) * (sigma1_sq + sigma2_sq + C2)
+
+        ssim_p = numerator / denominator
+        ssim_values[index] = ssim_p.mean()
+        
+    return ssim_values
+
+
 def aliasing_construct(echo, up_matrix, operator):
-    rec_echo = np.einsum('ij,bjk->bik', up_matrix, echo)
-    echo_fa = fftshift(fft(rec_echo, axis=1, norm='ortho'), axes=1)
-    echo_fa = echo_fa * operator['sc'].numpy()
-    echo_far = fftshift(fft(echo_fa, axis=2, norm='ortho'), axes=2)
-    echo_far = echo_far * operator['rc'].numpy()
-    echo_fa = ifft(ifftshift(echo_far, axes=2), axis=2, norm='ortho')
-    echo_fa = echo_fa * operator['ac'].numpy()
-    image = ifft(ifftshift(echo_fa, axes=1), axis=1, norm='ortho')
+    echo = torch.as_tensor(echo)
+    device = echo.device
+
+    rec_echo = torch.einsum('ij,bjk->bik', up_matrix, echo)
+    echo_fa = fftshift(fft(rec_echo, dim=1, norm='ortho'), dim=1)
+    echo_fa = echo_fa * operator['sc'].to(device)
+    echo_far = fftshift(fft(echo_fa, dim=2, norm='ortho'), dim=2)
+    echo_far = echo_far * operator['rc'].to(device)
+    echo_fa = ifft(ifftshift(echo_far, dim=2), dim=2, norm='ortho')
+    echo_fa = echo_fa * operator['ac'].to(device)
+    image = ifft(ifftshift(echo_fa, dim=1), dim=1, norm='ortho')
     
     return image
