@@ -9,6 +9,22 @@ def range_cut(image):
     return torch.clamp(image, 0, 255)
 
 
+def nrmse_evaluate(image, rec):
+    image = torch.as_tensor(image)
+    rec = torch.as_tensor(rec)
+    batch_size = image.shape[0]
+
+    residual = rec - image
+    loss = 0
+    for index in range(batch_size):
+        residual_norm = torch.linalg.matrix_norm(residual[index], ord=2)
+        target_norm = torch.linalg.matrix_norm(image[index], ord=2)
+        loss += residual_norm / target_norm 
+    loss_average = loss / batch_size
+
+    return loss_average
+
+
 def psnr_evaluate(image, rec):
     image = torch.as_tensor(image)
     rec = torch.as_tensor(rec)

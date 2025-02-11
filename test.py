@@ -11,7 +11,7 @@ from datetime import datetime
 from tqdm import tqdm
 
 from utils.observation_matrix import random_sampling_create
-from utils.evaluate import range_cut, psnr_evaluate, ssim_evaluate, aliasing_construct
+from utils.evaluate import range_cut, nrmse_evaluate, psnr_evaluate, ssim_evaluate, aliasing_construct
 from utils.config import processor
 from models.arsar_net import ARSARNet
 from models.pnp_net import NonInversionADMMPnPNet
@@ -64,7 +64,8 @@ def pre_process(rec, echo, img, up_matrix):
     aliasing_norm = range_cut(aliasing)
     img_norm = range_cut(img)
 
-    # PSNR and SSIM
+    # NRMSE, PSNR and SSIM
+    rec_nrmse = nrmse_evaluate(img_norm, rec_norm)
     rec_psnr = psnr_evaluate(img_norm, rec_norm)
     alias_psnr = psnr_evaluate(img_norm, aliasing_norm)
 
@@ -75,6 +76,7 @@ def pre_process(rec, echo, img, up_matrix):
     psnr_m = torch.mean(rec_psnr)
     ssim_m = np.mean(rec_ssim)
 
+    print(f"Mean NRMSE of reconstructed images: {rec_nrmse:.6f}")
     print(f"Mean PSNR of reconstructed images: {psnr_m:.6f}")
     print(f"Mean SSIM of reconstructed images: {ssim_m:.6f}")
 
