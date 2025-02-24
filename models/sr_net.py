@@ -13,12 +13,12 @@ def soft_threshold_complex(x, threshold):
 
 
 class SRNet(nn.Module):
-    def __init__(self, processor, device, up_matrix, num_layer, mode):
+    def __init__(self, processor, device, down_matrix, up_matrix, num_layer, mode):
         super().__init__()
         self.device = device
         self.num_layer = num_layer
 
-        self.layer_list = nn.ModuleList([BasicBlock(processor, device, up_matrix, mode) 
+        self.layer_list = nn.ModuleList([BasicBlock(processor, device, down_matrix, up_matrix, mode) 
                                        for _ in range(num_layer)])
 
     def forward(self, echo_downsampling):
@@ -37,16 +37,17 @@ class SRNet(nn.Module):
     
 
 class BasicBlock(nn.Module):
-    def __init__(self, processor, device, up_matrix, mode):
+    def __init__(self, processor, device, down_matrix, up_matrix, mode):
         super().__init__()
         self.processor = processor
         self.device = device
+        self.down_matrix = down_matrix
         self.up_matrix = up_matrix
         self.mode = mode
         self.net_object()
 
     def net_object(self):
-        self.r_net = RLinearityModule(self.processor, self.device, self.up_matrix)
+        self.r_net = RLinearityModule(self.processor, self.device, self.down_matrix, self.up_matrix)
 
         if self.mode == 'plus':
             self.n_net = NPlusNonlinearityModule(device=self.device)
@@ -62,12 +63,12 @@ class BasicBlock(nn.Module):
 
 
 class RLinearityModule(nn.Module):
-    def __init__(self, processor, device, up_matrix):
+    def __init__(self, processor, device, down_matrix, up_matrix):
         super().__init__()
         self.processor = processor
         self.device = device
+        self.down_matrix = down_matrix
         self.up_matrix = up_matrix
-        self.down_matrix = torch.transpose(up_matrix, dim0=0, dim1=1)
         self.miu = nn.Parameter(data=torch.tensor(1.0), requires_grad=True).to(device)
 
     def inverse_imaging_operator(self, image):

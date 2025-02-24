@@ -14,6 +14,7 @@ class ARSARNet(nn.Module):
         self, 
         device_index, 
         operator,
+        down_matrix, 
         up_matrix, 
         num_phase,
         iteration,
@@ -29,15 +30,15 @@ class ARSARNet(nn.Module):
         self.eta = nn.Parameter(torch.tensor([1.0]), requires_grad=True)
         self.device_index = device_index
 
-        self.reconstruction_start = ReconstructionLayer(self.rho, operator, 
+        self.reconstruction_start = ReconstructionLayer(self.rho, operator, down_matrix, 
                                                         up_matrix, device_index, is_first=True)
-        self.reconstruction_end = ReconstructionLayer(self.rho, operator, 
+        self.reconstruction_end = ReconstructionLayer(self.rho, operator, down_matrix, 
                                                         up_matrix, device_index, is_first=False)
         self.multiple = MultipleLayer(self.eta, device_index, is_first=True)
         layers = []
 
         for _ in range(num_phase):
-            layers.append(BasicBlock(device_index, operator, up_matrix, regular, in_channels, out_channels, 
+            layers.append(BasicBlock(device_index, operator, down_matrix, up_matrix, regular, in_channels, out_channels, 
                                      base_channels, kernel_size, num_breakpoints, iteration, self.rho, self.eta))
         
         self.iteration_net = nn.Sequential(*layers)
@@ -67,7 +68,8 @@ class BasicBlock(nn.Module):
     def __init__(
             self, 
             device_index, 
-            operator, 
+            operator,
+            down_matrix,  
             up_matrix, 
             regular, 
             in_channels, 
@@ -83,7 +85,7 @@ class BasicBlock(nn.Module):
         regularization = {'cnn': RecurrentBlock, 'unet': UnetDirectLayer, 'pretrain': UnetWithPretrain, 
                           'haar': ScaleFusionLayer, 'sr': SRLayer}
 
-        self.reconstruction = ReconstructionLayer(rho, operator, up_matrix, device_index)
+        self.reconstruction = ReconstructionLayer(rho, operator, down_matrix, up_matrix, device_index)
         self.multiple = MultipleLayer(eta, device_index)
 
         if regular == 'cnn':
@@ -122,12 +124,13 @@ class ReconstructionLayer(nn.Module):
     Non inversion ADMM: Optimization using second-order Taylor expansion, replacing matrix inversion step
     Method cited from: A 3-D Sparse SAR Imaging Method Based on Plug-and-Play
     '''
-    def __init__(self, rho, operator, up_matrix, device_index, is_first=False):
+    def __init__(self, rho, operator, down_matrix, up_matrix, device_index, is_first=False):
         super(ReconstructionLayer, self).__init__()
         self.rho = rho
-        self.gamma = nn.Parameter(torch.tensor([-0.1]), requires_grad=True)
+        self.gamma = nn.Parameter(torch.tensor([1.0]), requires_grad=True)
         self.operator = operator
         self.is_first = is_first
+        self.down_matrix = down_matrix
         self.up_matrix = up_matrix
         self.device_index = device_index
         self.device = torch.device(device_index if torch.cuda.is_available() else "cpu")
@@ -147,17 +150,35 @@ class ReconstructionLayer(nn.Module):
         image = ifft(ifftshift(echo_fa, dim=1), dim=1, norm='ortho')
         
         return image
+    
+    def echo_operator(self, image):
+        '''
+        Azimuth FFT -> Conjugate Azimuth Compression -> Range FFT 
+        -> Conjugate Range compression -> Range IFFT -> Conjugate RCMC -> Azimuth IFFT
+        '''
+        image_fa = fftshift(fft(image, dim=1, norm='ortho'), dim=1)
+        image_fa = image_fa * torch.conj(self.operator['ac']).to(self.device)
+        image_far = fftshift(fft(image_fa, dim=2, norm='ortho'), dim=2)
+        image_far = image_far * torch.conj(self.operator['rc']).to(self.device)
+        image_fa = ifft(ifftshift(image_far, dim=2), dim=2, norm='ortho')
+        image_fa = image_fa * torch.conj(self.operator['sc']).to(self.device)
+        echo = ifft(ifftshift(image_fa, dim=1), dim=1, norm='ortho')
+        shaped_echo = torch.einsum('ij,bjk->bik', self.down_matrix, echo)
 
-    def forward(self, input, x, z, beta):
-        trivial_value = self.imaging_operator(input)
+        return shaped_echo
+
+    def forward(self, echo_input, x, z, beta):
         if self.is_first:
+            trivial_value = self.imaging_operator(echo_input)
             addition_value = torch.zeros_like(trivial_value, device=self.device_index)  # initialize
         else:
+            residual = echo_input - self.echo_operator(x)
+            trivial_value = self.imaging_operator(residual)
             penalty_value = self.rho * torch.sub(z, beta)
-            scaled_value = self.gamma * x
+            scaled_value = (1 - self.rho) * x
             addition_value = scaled_value + penalty_value
 
-        return trivial_value + addition_value
+        return self.gamma * trivial_value + addition_value
 
 
 class MultipleLayer(nn.Module):

@@ -166,7 +166,7 @@ def main(args):
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     num_workers = 0
 
-    _, up_matrix = random_sampling_create(down_rate, device_index)
+    down_matrix, up_matrix = random_sampling_create(down_rate, device_index)
 
     test_file_path = [os.path.join(args.tst_dataset, 'image_test.npy'), 
                       os.path.join(args.tst_dataset, f'echo_{int(down_rate * 100)}_test.npy')]
@@ -183,6 +183,7 @@ def main(args):
         model = ARSARNet(
             device_index, 
             processor, 
+            down_matrix, 
             up_matrix, 
             args.layer_num, 
             args.internal_iteration,
@@ -201,6 +202,7 @@ def main(args):
         model = SRNet(
             processor,       
             device, 
+            down_matrix, 
             up_matrix, 
             args.layer_num,  
             mode='plus',
