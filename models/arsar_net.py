@@ -20,7 +20,7 @@ class ARSARNet(nn.Module):
         regular,
         in_channels = 1,
         out_channels = 32,
-        base_channels = 8,  # over fitting
+        base_channels = 8,
         kernel_size = 3, 
         num_breakpoints = 60,
         ):
@@ -80,8 +80,8 @@ class BasicBlock(nn.Module):
             eta,
             ):
         super(BasicBlock, self).__init__()
-        regularization = {'cnn': RecurrentBlock, 'unet': UnetUpdateLayer, 
-                          'pretrain': UnetWithPretrain, 'haar': ScaleFusionLayer}
+        regularization = {'cnn': RecurrentBlock, 'unet': UnetDirectLayer, 'pretrain': UnetWithPretrain, 
+                          'haar': ScaleFusionLayer, 'sr': SRLayer}
 
         self.reconstruction = ReconstructionLayer(rho, operator, up_matrix, device_index)
         self.multiple = MultipleLayer(eta, device_index)
@@ -90,12 +90,13 @@ class BasicBlock(nn.Module):
             self.regular_layer = regularization[regular](in_channels, out_channels, kernel_size, 
                                                          num_breakpoints, iteration)
         elif regular == 'unet':
-            self.regular_layer = regularization[regular](in_channels, base_channels, kernel_size, 
-                                                         iteration)
+            self.regular_layer = regularization[regular](in_channels, base_channels, kernel_size)
         elif regular == 'pretrain':
             self.regular_layer = regularization[regular](in_channels, kernel_size)
         elif regular == 'haar':
             self.regular_layer = regularization[regular](in_channels, kernel_size, device_index)
+        elif regular == 'sr':
+            self.regular_layer = regularization[regular](in_channels, base_channels, kernel_size)
         else:
             raise ValueError(f'Nnknown regularization found: {regular}!')
     
@@ -345,6 +346,168 @@ class UnetLayer(nn.Module):
         output_imag = self.out(dec1.imag)
 
         return torch.complex(output_real, output_imag)
+    
+
+class UnetDirectLayer(nn.Module):
+    '''
+    Unet for z updating without iteration
+    Parameters: 30.2M(30,249,238)
+    '''
+    def __init__(self, in_channels, base_channels, kernel_size):
+        super(UnetDirectLayer, self).__init__()
+        self.encoder1 = ConvLayer(in_channels, base_channels, kernel_size)
+        self.encoder2 = ConvLayer(base_channels, base_channels * 4, kernel_size)
+        self.encoder3 = ConvLayer(base_channels * 4, base_channels * 16, kernel_size)
+
+        self.center = ConvLayer(base_channels * 16, base_channels * 16, kernel_size)
+
+        self.decoder3 = ConvLayer(base_channels * 32, base_channels * 4, kernel_size)
+        self.decoder2 = ConvLayer(base_channels * 8, base_channels, kernel_size)
+        self.decoder1 = ConvLayer(base_channels * 2, base_channels, kernel_size)
+
+        self.out = nn.Conv2d(base_channels, in_channels, kernel_size=1)
+
+    def average_pooling(self, encoder, kernel_size=2):
+        encoder_real = F.avg_pool2d(encoder.real, kernel_size)
+        encoder_imag = F.avg_pool2d(encoder.imag, kernel_size)
+
+        return torch.complex(encoder_real, encoder_imag)
+    
+    def interpolate(self, decoder, scale_factor):
+        decoder_real = F.interpolate(decoder.real, scale_factor=scale_factor, 
+                                     mode='bilinear', align_corners=True)
+        decoder_imag = F.interpolate(decoder.imag, scale_factor=scale_factor, 
+                                     mode='bilinear', align_corners=True)
+        
+        return torch.complex(decoder_real, decoder_imag)
+
+    def forward(self, x, beta):
+        z = torch.add(x, beta)
+        z_channeled = torch.unsqueeze(z, 1)
+
+        enc1 = self.encoder1(z_channeled)  # channel = 4, size = 512
+        enc2 = self.encoder2(self.average_pooling(enc1, 4))  # channel = 16, size = 128
+        enc3 = self.encoder3(self.average_pooling(enc2, 2))  # channel = 64, size = 32
+
+        center = self.center(self.average_pooling(enc3, 2))  # channel = 64, size = 16
+
+        dec3 = self.decoder3(torch.cat([self.interpolate(center, scale_factor=2), enc3], 1))
+        dec2 = self.decoder2(torch.cat([self.interpolate(dec3, scale_factor=4), enc2], 1))
+        dec1 = self.decoder1(torch.cat([self.interpolate(dec2, scale_factor=4), enc1], 1))
+        output_real = self.out(dec1.real)
+        output_imag = self.out(dec1.imag)
+        output = torch.complex(output_real, output_imag)
+
+        result = torch.squeeze(output, 1)
+
+        return result
+
+
+class UnetFullLayer(nn.Module):
+    '''
+    Unet for z updating without downsampling
+    Parameters: 
+    '''
+    def __init__(self, in_channels, base_channels, kernel_size):
+        super(UnetFullLayer, self).__init__()
+        self.encoder1 = ConvLayer(in_channels, base_channels, kernel_size)
+        self.encoder2 = ConvLayer(base_channels, base_channels * 4, kernel_size)
+        self.encoder3 = ConvLayer(base_channels * 4, base_channels * 16, kernel_size)
+
+        self.center = ConvLayer(base_channels * 16, base_channels * 16, kernel_size)
+
+        self.decoder3 = ConvLayer(base_channels * 32, base_channels * 4, kernel_size)
+        self.decoder2 = ConvLayer(base_channels * 8, base_channels, kernel_size)
+        self.decoder1 = ConvLayer(base_channels * 2, base_channels, kernel_size)
+
+        self.out = nn.Conv2d(base_channels, in_channels, kernel_size=1)
+
+    def forward(self, x, beta):
+        z = torch.add(x, beta)
+        z_channeled = torch.unsqueeze(z, 1)
+
+        enc1 = self.encoder1(z_channeled)  # channel = 4, size = 512
+        enc2 = self.encoder2(enc1)  # channel = 16, size = 512
+        enc3 = self.encoder3(enc2)  # channel = 64, size = 512
+
+        center = self.center(enc3)  # channel = 64, size = 512
+
+        dec3 = self.decoder3(torch.cat([center, enc3], 1))
+        dec2 = self.decoder2(torch.cat([dec3, enc2], 1))
+        dec1 = self.decoder1(torch.cat([dec2, enc1], 1))
+        output_real = self.out(dec1.real)
+        output_imag = self.out(dec1.imag)
+        output = torch.complex(output_real, output_imag)
+
+        result = torch.squeeze(output, 1)
+
+        return result
+    
+
+class SRLayer(nn.Module):
+    '''
+    Z-updating layer with sparse representation
+    Parameters: 
+    '''
+    def __init__(self, in_channels, base_channels, kernel_size):
+        super(SRLayer, self).__init__()
+        padding = int((kernel_size - 1) / 2)
+        self.tau = nn.Parameter(torch.tensor([1.0]), requires_grad=True)
+
+        self.encoder_i = nn.Conv2d(in_channels, base_channels, kernel_size, padding=padding)
+        self.encoder1 = nn.Conv2d(base_channels, base_channels * 4, kernel_size, padding=padding)
+        self.encoder2 = nn.Conv2d(base_channels * 4, base_channels * 8, kernel_size, padding=padding)
+        self.bn1 = nn.BatchNorm2d(base_channels * 4)
+        self.relu1 = nn.ReLU(inplace=True)
+
+        self.decoder2 = nn.Conv2d(base_channels * 8, base_channels * 4, kernel_size, padding=padding)
+        self.decoder1 = nn.Conv2d(base_channels * 4, base_channels, kernel_size, padding=padding)
+        self.decoder_e = nn.Conv2d(base_channels, in_channels, kernel_size, padding=padding)
+        self.bn2 = nn.BatchNorm2d(base_channels * 4)
+        self.relu2 = nn.ReLU(inplace=True)
+
+    def soft_threshold_complex(self, image):
+        '''
+        Soft threshold algorithm of complex
+        '''
+        soft_image = (image/torch.abs(image)) * torch.maximum(torch.abs(image) - self.tau, 
+                                                torch.tensor(0.0, device=image.device))
+        return soft_image
+
+    def forward(self, x, beta):
+        z = torch.add(x, beta)
+        z_channeled = torch.unsqueeze(z, 1)
+
+        enci_r = self.encoder_i(z_channeled.real)
+        enci_i = self.encoder_i(z_channeled.imag)
+        enc1_r = self.encoder1(enci_r)
+        enc1_i = self.encoder1(enci_i)
+        bn1_r = self.bn1(enc1_r)
+        bn1_i = self.bn1(enc1_i)
+        relu1_r = self.relu1(bn1_r)
+        relu1_i = self.relu1(bn1_i)
+        enc2_r = self.encoder2(relu1_r)
+        enc2_i = self.encoder2(relu1_i)
+
+        enc2 = torch.complex(enc2_r, enc2_i)
+        st_value = self.soft_threshold_complex(enc2)
+
+        dec2_r = self.decoder2(st_value.real)
+        dec2_i = self.decoder2(st_value.imag)
+        bn2_r = self.bn2(dec2_r)
+        bn2_i = self.bn2(dec2_i)
+        relu2_r = self.relu2(bn2_r)
+        relu2_i = self.relu2(bn2_i)
+        dec1_r = self.decoder1(relu2_r)
+        dec1_i = self.decoder1(relu2_i)
+
+        dece_r = self.decoder_e(dec1_r) + z_channeled.real
+        dece_i = self.decoder_e(dec1_i) + z_channeled.imag
+
+        dec_e = torch.complex(dece_r, dece_i)
+        output = torch.squeeze(dec_e, 1)
+
+        return output
 
 
 class UnetWithPretrain(nn.Module):

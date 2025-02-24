@@ -15,6 +15,7 @@ from utils.evaluate import range_cut, nrmse_evaluate, psnr_evaluate, ssim_evalua
 from utils.config import processor
 from models.arsar_net import ARSARNet
 from models.pnp_net import NonInversionADMMPnPNet
+from models.sr_net import SRNet
 
 
 def get_args():
@@ -22,7 +23,7 @@ def get_args():
     parser.add_argument('--tst_dataset', default='./data/concat', help='Testing dataset directory')
     parser.add_argument('--weight', default="/media/Disk1/FuShiping/weights/concat/2025_02_05/downsample_0.5_epochs_97_17_29_05.pt")
     parser.add_argument('--device', default='cuda:3', help='The device index used in testing')
-    parser.add_argument('--network', default='arsar', help='Backbone network (pnp or arsar)')
+    parser.add_argument('--network', default='arsar', help='Backbone network (sr, pnp or arsar)')
     parser.add_argument('--regularization', default='haar', help='The regularization type in ARSAR-Net')
     parser.add_argument('--batch_size', default=4, type=int, help='Batch size for testing')
     parser.add_argument('--layer_num', default=9, type=int, help='Net block num in iteration')
@@ -195,6 +196,14 @@ def main(args):
             args.layer_num, 
             args.internal_iteration,
             args.regularization,
+            ).to(device)
+    elif network == 'sr':
+        model = SRNet(
+            processor,       
+            device, 
+            up_matrix, 
+            args.layer_num,  
+            mode='plus',
             ).to(device)
     else:
         raise ValueError(f'Unknown network name found: {network}!')

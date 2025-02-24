@@ -15,6 +15,7 @@ from utils.observation_matrix import random_sampling_create
 from utils.config import processor
 from models.arsar_net import ARSARNet
 from models.pnp_net import NonInversionADMMPnPNet
+from models.sr_net import SRNet
 from logs.log_utils import configure_logging, log_training_info
 
 
@@ -56,7 +57,7 @@ def get_args():
     parser.add_argument('--trn_dataset', default='./data/concat', help='Training dataset directory')
     parser.add_argument('--val_size', default=400, type=int, help='Validation dataset size')
     parser.add_argument('--device', default='cuda:0', help='The device index used in training')
-    parser.add_argument('--network', default='arsar', help='Backbone network (pnp or arsar)')
+    parser.add_argument('--network', default='arsar', help='Backbone network (sr, pnp or arsar)')
     parser.add_argument('--criterion', default='norm', help='Criterion type (mse or norm)')
     parser.add_argument('--regularization', default='haar', help='The regularization type in ARSAR-Net')
     parser.add_argument('--epochs', default=100, type=int, help='Epochs')
@@ -221,6 +222,14 @@ def main(args):
             args.layer_num, 
             args.internal_iteration,
             regular,
+            ).to(device)
+    elif network == 'sr':
+        model = SRNet(
+            processor,       
+            device, 
+            up_matrix, 
+            args.layer_num,  
+            mode='plus',
             ).to(device)
     else:
         raise ValueError(f'Unknown network name found: {network}!')
