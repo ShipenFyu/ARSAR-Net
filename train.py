@@ -106,8 +106,7 @@ def train_epochs(model: nn.Module, criterion: nn.Module,
     log_training_info(logger, f"Parameters: Epochs: {epochs}, Batch Size: {batch_size}, "
                               f"Learning Rate: {args.lr}, Regularization: {regular}")
     log_training_info(logger, f"Scene: {label}, criterion: {args.criterion}")
-    log_training_info(logger, f"Layer_num: {args.layer_num}, "
-                              f"Internal_iteration(if recurrent): {args.internal_iteration}")
+    log_training_info(logger, f"Layer_num: {args.layer_num}")
     log_training_info(logger, f"Downsampling Rate: {int(down_rate * 100)}percent")
     log_training_info(logger, f"Training started at {datetime.now().strftime('%Y %m %d-%H:%M:%S')}")
     start_time = time.time()
@@ -207,12 +206,11 @@ def main(args):
 
     if network == 'arsar':
         model = ARSARNet( 
-            device_index, 
+            device, 
             processor,
             down_matrix,  
             up_matrix, 
             args.layer_num, 
-            args.internal_iteration,
             regular,
             ).to(device)
     elif network == 'pnp':

@@ -1,55 +1,48 @@
 import torch
-import torchpwl
 import torch.nn as nn
 import torch.nn.functional as F
 
-from torchvision.models import resnet18, resnet34, resnet50
-from torchvision.models import ResNet18_Weights, ResNet34_Weights, ResNet50_Weights
 from torch.fft import fft, ifft, fftshift, ifftshift
-from pytorch_wavelets import DWTForward
 
 
 class ARSARNet(nn.Module):
     def __init__(
         self, 
-        device_index, 
+        device, 
         operator,
         down_matrix, 
         up_matrix, 
-        num_phase,
-        iteration,
+        layer_num,
         regular,
         in_channels = 1,
-        out_channels = 32,
-        base_channels = 8,
+        base_channels = 4,
         kernel_size = 3, 
-        num_breakpoints = 60,
         ):
         super(ARSARNet, self).__init__()
         self.rho = nn.Parameter(torch.tensor([0.1]), requires_grad=True)
         self.eta = nn.Parameter(torch.tensor([1.0]), requires_grad=True)
-        self.device_index = device_index
+        self.device = device
 
         self.reconstruction_start = ReconstructionLayer(self.rho, operator, down_matrix, 
-                                                        up_matrix, device_index, is_first=True)
+                                                        up_matrix, device, is_first=True)
         self.reconstruction_end = ReconstructionLayer(self.rho, operator, down_matrix, 
-                                                        up_matrix, device_index, is_first=False)
-        self.multiple = MultipleLayer(self.eta, device_index, is_first=True)
+                                                        up_matrix, device, is_first=False)
+        self.multiple = MultipleLayer(self.eta, is_first=True)
         layers = []
 
-        for _ in range(num_phase):
-            layers.append(BasicBlock(device_index, operator, down_matrix, up_matrix, regular, in_channels, out_channels, 
-                                     base_channels, kernel_size, num_breakpoints, iteration, self.rho, self.eta))
+        for _ in range(layer_num):
+            layers.append(BasicBlock(device, operator, down_matrix, up_matrix, regular, in_channels,  
+                                     base_channels, kernel_size, self.rho, self.eta))
         
         self.iteration_net = nn.Sequential(*layers)
     
-    def forward(self, input):
-        x = self.reconstruction_start(input, 0, 0, 0)
+    def forward(self, echo):
+        x = self.reconstruction_start(echo, 0, 0, 0)
         beta = self.multiple(0, x, 0)
-        z = torch.zeros_like(x, device=self.device_index)
+        z = torch.zeros_like(x, device=x.device)
 
         input_dict = dict()
-        input_dict['input'] = input
+        input_dict['echo'] = echo
         input_dict['x'] = x
         input_dict['z'] = z
         input_dict['beta'] = beta
@@ -59,7 +52,7 @@ class ARSARNet(nn.Module):
         z = input_dict['z']
         beta = input_dict['beta']
 
-        x = self.reconstruction_end(input, x, z, beta)
+        x = self.reconstruction_end(echo, x, z, beta)
 
         return x
 
@@ -67,48 +60,39 @@ class ARSARNet(nn.Module):
 class BasicBlock(nn.Module):
     def __init__(
             self, 
-            device_index, 
+            device, 
             operator,
             down_matrix,  
             up_matrix, 
             regular, 
             in_channels, 
-            out_channels,
             base_channels, 
             kernel_size, 
-            num_breakpoints, 
-            iteration, 
             rho, 
             eta,
             ):
         super(BasicBlock, self).__init__()
-        regularization = {'cnn': RecurrentBlock, 'unet': UnetDirectLayer, 'pretrain': UnetWithPretrain, 
-                          'haar': ScaleFusionLayer, 'sr': SRLayer}
+        regularization = {'swift': SwiftNet, 'pro': ProNet}
+        swift_channels = base_channels
+        pro_channels = base_channels * 4
 
-        self.reconstruction = ReconstructionLayer(rho, operator, down_matrix, up_matrix, device_index)
-        self.multiple = MultipleLayer(eta, device_index)
+        self.reconstruction = ReconstructionLayer(rho, operator, down_matrix, up_matrix, device)
+        self.multiple = MultipleLayer(eta)
 
-        if regular == 'cnn':
-            self.regular_layer = regularization[regular](in_channels, out_channels, kernel_size, 
-                                                         num_breakpoints, iteration)
-        elif regular == 'unet':
-            self.regular_layer = regularization[regular](in_channels, base_channels, kernel_size)
-        elif regular == 'pretrain':
-            self.regular_layer = regularization[regular](in_channels, kernel_size)
-        elif regular == 'haar':
-            self.regular_layer = regularization[regular](in_channels, kernel_size, device_index)
-        elif regular == 'sr':
-            self.regular_layer = regularization[regular](in_channels, base_channels, kernel_size)
+        if regular == 'swift':
+            self.regular_layer = regularization[regular](in_channels, swift_channels, kernel_size)
+        elif regular == 'pro':
+            self.regular_layer = regularization[regular](in_channels, pro_channels, kernel_size)
         else:
-            raise ValueError(f'Nnknown regularization found: {regular}!')
+            raise ValueError(f'Unknown regularization found: {regular}!')
     
     def forward(self, input_dict):
-        input = input_dict['input']
+        echo = input_dict['echo']
         x = input_dict['x']
         z = input_dict['z']
         beta = input_dict['beta']
 
-        x = self.reconstruction(input, x, z, beta)
+        x = self.reconstruction(echo, x, z, beta)
         z = self.regular_layer(x, beta)
         beta = self.multiple(beta, x, z)
 
@@ -124,7 +108,7 @@ class ReconstructionLayer(nn.Module):
     Non inversion ADMM: Optimization using second-order Taylor expansion, replacing matrix inversion step
     Method cited from: A 3-D Sparse SAR Imaging Method Based on Plug-and-Play
     '''
-    def __init__(self, rho, operator, down_matrix, up_matrix, device_index, is_first=False):
+    def __init__(self, rho, operator, down_matrix, up_matrix, device, is_first=False):
         super(ReconstructionLayer, self).__init__()
         self.rho = rho
         self.gamma = nn.Parameter(torch.tensor([1.0]), requires_grad=True)
@@ -132,8 +116,7 @@ class ReconstructionLayer(nn.Module):
         self.is_first = is_first
         self.down_matrix = down_matrix
         self.up_matrix = up_matrix
-        self.device_index = device_index
-        self.device = torch.device(device_index if torch.cuda.is_available() else "cpu")
+        self.device = device
 
     def imaging_operator(self, echo):
         '''
@@ -170,7 +153,7 @@ class ReconstructionLayer(nn.Module):
     def forward(self, echo_input, x, z, beta):
         if self.is_first:
             trivial_value = self.imaging_operator(echo_input)
-            addition_value = torch.zeros_like(trivial_value, device=self.device_index)  # initialize
+            addition_value = torch.zeros_like(trivial_value, device=echo_input.device)  # initialize
         else:
             residual = echo_input - self.echo_operator(x)
             trivial_value = self.imaging_operator(residual)
@@ -182,679 +165,139 @@ class ReconstructionLayer(nn.Module):
 
 
 class MultipleLayer(nn.Module):
-    def __init__(self, eta, device_index, is_first=False):
+    def __init__(self, eta, is_first=False):
         super(MultipleLayer, self).__init__()
         self.eta = eta
-        self.device_index = device_index
         self.is_first = is_first
 
     def forward(self, beta, x, z):
         if self.is_first:
-            return torch.zeros_like(x, device=self.device_index)  # initialize
+            return torch.zeros_like(x, device=x.device)  # initialize
         else:
             return torch.add(beta, self.eta * torch.sub(x, z))
- 
 
-class AdditionalLayer(nn.Module):
-    def __init__(self, miu_1, miu_2, is_first=False):
-        super(AdditionalLayer, self).__init__()
-        self.miu_1 = miu_1
-        self.miu_2 = miu_2
-        self.is_first = is_first
-    
-    def forward(self, z, c, x, beta):
-        variables = torch.add(x, beta)
-
-        if self.is_first:
-            return variables
-        else:
-            mid_value = torch.add(self.miu_1 * z, self.miu_2 * variables)
-            return torch.sub(mid_value, c)
-        
-
-class RecurrentBlock(nn.Module):
-    '''
-    Cited from: "ADMM-CSNet: A Deep Learning Approach for Image Compressive Sensing"
-    '''
-    def __init__(self, in_channels, out_channels, kernel_size, num_breakpoints, iteration):
-        super(RecurrentBlock, self).__init__()
-        self.iteration = iteration
-
-        self.miu_1 = nn.Parameter(torch.tensor([0.5]), requires_grad=True)
-        self.miu_2 = nn.Parameter(torch.tensor([0.5]), requires_grad=True)
-
-        self.conv_1 = ConvolutionNormalLayer(in_channels, out_channels, kernel_size)
-        self.nonlinear = NonLinearLayer(out_channels, num_breakpoints)
-        self.conv_2 = ConvolutionConjLayer(out_channels, in_channels, kernel_size)
-        self.additional_start = AdditionalLayer(self.miu_1, self.miu_2, is_first=True)
-        self.additional = AdditionalLayer(self.miu_1, self.miu_2)
-        self.reset_parameters()  # initialize convolution layers' weights
-
-    def reset_parameters(self):
-        self.conv_1.conv.weight = torch.nn.init.normal_(self.conv_1.conv.weight, mean=0, std=1)
-        self.conv_2.conv.weight = torch.nn.init.normal_(self.conv_2.conv.weight, mean=0, std=1)
-        self.conv_1.conv.weight.data = self.conv_1.conv.weight.data * 0.025
-        self.conv_2.conv.weight.data = self.conv_2.conv.weight.data * 0.025
-
-    def forward(self, x, beta):
-        z = self.additional_start(0, 0, x, beta)  # initialize
-
-        for _ in range(self.iteration):
-            z_channeled = torch.unsqueeze(z, 1)
-            conv1 = self.conv_1(z_channeled)
-            h = self.nonlinear(conv1)
-            conv2 = self.conv_2(h)
-            conv2_shaped = torch.squeeze(conv2, 1)
-            z = self.additional(z, conv2_shaped, x, beta)
-        
-        return z
-    
-
-class ConvolutionNormalLayer(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size):
-        super(ConvolutionNormalLayer, self).__init__()
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, padding=int((kernel_size - 1) / 2), 
-                              stride=1, dilation=1, bias=True)
-        self.bn = nn.BatchNorm2d(out_channels)
-    
-    def forward(self, z):
-        real_part = self.conv(z.real)
-        imag_part = self.conv(z.imag)
-
-        bn_real = self.bn(real_part)
-        bn_imag = self.bn(imag_part)
-
-        return torch.complex(bn_real, bn_imag)
-    
-
-class ConvolutionConjLayer(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size):
-        super(ConvolutionConjLayer, self).__init__()
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, padding=int((kernel_size - 1) / 2), 
-                              stride=1, dilation=1, bias=True)
-        self.bn = nn.BatchNorm2d(out_channels)
-        
-    def forward(self, h):
-        real_part = self.conv(h.real)
-        imag_part = self.conv(h.imag)
-
-        bn_real = self.bn(real_part)
-        bn_imag = self.bn(imag_part)
-
-        return torch.complex(bn_real, bn_imag)
-
-
-class NonLinearLayer(nn.Module):
-    def __init__(self, channels, breakpoints):
-        super(NonLinearLayer, self).__init__()
-        self.pwl = torchpwl.PWL(num_channels=channels, num_breakpoints=breakpoints)
-
-    def forward(self, z):
-        real_part = self.pwl(z.real)
-        imag_part = self.pwl(z.imag)
-
-        return torch.complex(real_part, imag_part)
-
-
-class UnetUpdateLayer(nn.Module):
-    '''
-    Unet structure for z updating
-    '''
-    def __init__(self, in_channels, base_channels, kernel_size, iteration):
-        super(UnetUpdateLayer, self).__init__()
-    
-        self.iteration = iteration
-
-        self.miu_1 = nn.Parameter(torch.tensor([0.5]), requires_grad=True)
-        self.miu_2 = nn.Parameter(torch.tensor([0.5]), requires_grad=True)
-
-        self.unet = UnetLayer(in_channels, base_channels, kernel_size)
-        self.additional_start = AdditionalLayer(self.miu_1, self.miu_2, is_first=True)
-        self.additional = AdditionalLayer(self.miu_1, self.miu_2)
-
-    def forward(self, x, beta):
-        z = self.additional_start(0, 0, x, beta)  # initialize
-
-        for _ in range(self.iteration):
-            z_channeled = torch.unsqueeze(z, 1)
-            unet_out = self.unet(z_channeled)
-            unet_shaped = torch.squeeze(unet_out, 1)
-            z = self.additional(z, unet_shaped, x, beta)
-        
-        return z
-
-
-class UnetLayer(nn.Module):
-    def __init__(self, in_channels, base_channels, kernel_size):
-        super(UnetLayer, self).__init__()
-        self.encoder1 = ConvLayer(in_channels, base_channels, kernel_size)
-        self.encoder2 = ConvLayer(base_channels, base_channels * 2, kernel_size)
-        self.encoder3 = ConvLayer(base_channels * 2, base_channels * 4, kernel_size)
-
-        self.center = ConvLayer(base_channels * 4, base_channels * 4, kernel_size)
-
-        self.decoder3 = ConvLayer(base_channels * 8, base_channels * 2, kernel_size)
-        self.decoder2 = ConvLayer(base_channels * 4, base_channels, kernel_size)
-        self.decoder1 = ConvLayer(base_channels * 2, base_channels, kernel_size)
-
-        self.out = nn.Conv2d(base_channels, in_channels, kernel_size=1)
-
-    def average_pooling(self, encoder, kernel_size=2):
-        encoder_real = F.avg_pool2d(encoder.real, kernel_size)
-        encoder_imag = F.avg_pool2d(encoder.imag, kernel_size)
-
-        return torch.complex(encoder_real, encoder_imag)
-    
-    def interpolate(self, decoder, scale_factor):
-        decoder_real = F.interpolate(decoder.real, scale_factor=scale_factor, 
-                                     mode='bilinear', align_corners=True)
-        decoder_imag = F.interpolate(decoder.imag, scale_factor=scale_factor, 
-                                     mode='bilinear', align_corners=True)
-        
-        return torch.complex(decoder_real, decoder_imag)
-
-    def forward(self, z):
-        enc1 = self.encoder1(z)
-        enc2 = self.encoder2(self.average_pooling(enc1, 2))
-        enc3 = self.encoder3(self.average_pooling(enc2, 2))
-
-        center = self.center(self.average_pooling(enc3, 2))
-
-        dec3 = self.decoder3(torch.cat([self.interpolate(center, scale_factor=2), enc3], 1))
-        dec2 = self.decoder2(torch.cat([self.interpolate(dec3, scale_factor=2), enc2], 1))
-        dec1 = self.decoder1(torch.cat([self.interpolate(dec2, scale_factor=2), enc1], 1))
-        output_real = self.out(dec1.real)
-        output_imag = self.out(dec1.imag)
-
-        return torch.complex(output_real, output_imag)
-    
-
-class UnetDirectLayer(nn.Module):
-    '''
-    Unet for z updating without iteration
-    Parameters: 30.2M(30,249,238)
-    '''
-    def __init__(self, in_channels, base_channels, kernel_size):
-        super(UnetDirectLayer, self).__init__()
-        self.encoder1 = ConvLayer(in_channels, base_channels, kernel_size)
-        self.encoder2 = ConvLayer(base_channels, base_channels * 4, kernel_size)
-        self.encoder3 = ConvLayer(base_channels * 4, base_channels * 16, kernel_size)
-
-        self.center = ConvLayer(base_channels * 16, base_channels * 16, kernel_size)
-
-        self.decoder3 = ConvLayer(base_channels * 32, base_channels * 4, kernel_size)
-        self.decoder2 = ConvLayer(base_channels * 8, base_channels, kernel_size)
-        self.decoder1 = ConvLayer(base_channels * 2, base_channels, kernel_size)
-
-        self.out = nn.Conv2d(base_channels, in_channels, kernel_size=1)
-
-    def average_pooling(self, encoder, kernel_size=2):
-        encoder_real = F.avg_pool2d(encoder.real, kernel_size)
-        encoder_imag = F.avg_pool2d(encoder.imag, kernel_size)
-
-        return torch.complex(encoder_real, encoder_imag)
-    
-    def interpolate(self, decoder, scale_factor):
-        decoder_real = F.interpolate(decoder.real, scale_factor=scale_factor, 
-                                     mode='bilinear', align_corners=True)
-        decoder_imag = F.interpolate(decoder.imag, scale_factor=scale_factor, 
-                                     mode='bilinear', align_corners=True)
-        
-        return torch.complex(decoder_real, decoder_imag)
-
-    def forward(self, x, beta):
-        z = torch.add(x, beta)
-        z_channeled = torch.unsqueeze(z, 1)
-
-        enc1 = self.encoder1(z_channeled)  # channel = 4, size = 512
-        enc2 = self.encoder2(self.average_pooling(enc1, 4))  # channel = 16, size = 128
-        enc3 = self.encoder3(self.average_pooling(enc2, 2))  # channel = 64, size = 32
-
-        center = self.center(self.average_pooling(enc3, 2))  # channel = 64, size = 16
-
-        dec3 = self.decoder3(torch.cat([self.interpolate(center, scale_factor=2), enc3], 1))
-        dec2 = self.decoder2(torch.cat([self.interpolate(dec3, scale_factor=4), enc2], 1))
-        dec1 = self.decoder1(torch.cat([self.interpolate(dec2, scale_factor=4), enc1], 1))
-        output_real = self.out(dec1.real)
-        output_imag = self.out(dec1.imag)
-        output = torch.complex(output_real, output_imag)
-
-        result = torch.squeeze(output, 1)
-
-        return result
-
-
-class UnetFullLayer(nn.Module):
-    '''
-    Unet for z updating without downsampling
-    Parameters: 
-    '''
-    def __init__(self, in_channels, base_channels, kernel_size):
-        super(UnetFullLayer, self).__init__()
-        self.encoder1 = ConvLayer(in_channels, base_channels, kernel_size)
-        self.encoder2 = ConvLayer(base_channels, base_channels * 4, kernel_size)
-        self.encoder3 = ConvLayer(base_channels * 4, base_channels * 16, kernel_size)
-
-        self.center = ConvLayer(base_channels * 16, base_channels * 16, kernel_size)
-
-        self.decoder3 = ConvLayer(base_channels * 32, base_channels * 4, kernel_size)
-        self.decoder2 = ConvLayer(base_channels * 8, base_channels, kernel_size)
-        self.decoder1 = ConvLayer(base_channels * 2, base_channels, kernel_size)
-
-        self.out = nn.Conv2d(base_channels, in_channels, kernel_size=1)
-
-    def forward(self, x, beta):
-        z = torch.add(x, beta)
-        z_channeled = torch.unsqueeze(z, 1)
-
-        enc1 = self.encoder1(z_channeled)  # channel = 4, size = 512
-        enc2 = self.encoder2(enc1)  # channel = 16, size = 512
-        enc3 = self.encoder3(enc2)  # channel = 64, size = 512
-
-        center = self.center(enc3)  # channel = 64, size = 512
-
-        dec3 = self.decoder3(torch.cat([center, enc3], 1))
-        dec2 = self.decoder2(torch.cat([dec3, enc2], 1))
-        dec1 = self.decoder1(torch.cat([dec2, enc1], 1))
-        output_real = self.out(dec1.real)
-        output_imag = self.out(dec1.imag)
-        output = torch.complex(output_real, output_imag)
-
-        result = torch.squeeze(output, 1)
-
-        return result
-    
-
-class SRLayer(nn.Module):
-    '''
-    Z-updating layer with sparse representation
-    Parameters: 
-    '''
-    def __init__(self, in_channels, base_channels, kernel_size):
-        super(SRLayer, self).__init__()
-        padding = int((kernel_size - 1) / 2)
-        self.tau = nn.Parameter(torch.tensor([1.0]), requires_grad=True)
-
-        self.encoder_i = nn.Conv2d(in_channels, base_channels, kernel_size, padding=padding)
-        self.encoder1 = nn.Conv2d(base_channels, base_channels * 4, kernel_size, padding=padding)
-        self.encoder2 = nn.Conv2d(base_channels * 4, base_channels * 8, kernel_size, padding=padding)
-        self.bn1 = nn.BatchNorm2d(base_channels * 4)
-        self.relu1 = nn.ReLU(inplace=True)
-
-        self.decoder2 = nn.Conv2d(base_channels * 8, base_channels * 4, kernel_size, padding=padding)
-        self.decoder1 = nn.Conv2d(base_channels * 4, base_channels, kernel_size, padding=padding)
-        self.decoder_e = nn.Conv2d(base_channels, in_channels, kernel_size, padding=padding)
-        self.bn2 = nn.BatchNorm2d(base_channels * 4)
-        self.relu2 = nn.ReLU(inplace=True)
-
-    def soft_threshold_complex(self, image):
-        '''
-        Soft threshold algorithm of complex
-        '''
-        soft_image = (image/torch.abs(image)) * torch.maximum(torch.abs(image) - self.tau, 
-                                                torch.tensor(0.0, device=image.device))
-        return soft_image
-
-    def forward(self, x, beta):
-        z = torch.add(x, beta)
-        z_channeled = torch.unsqueeze(z, 1)
-
-        enci_r = self.encoder_i(z_channeled.real)
-        enci_i = self.encoder_i(z_channeled.imag)
-        enc1_r = self.encoder1(enci_r)
-        enc1_i = self.encoder1(enci_i)
-        bn1_r = self.bn1(enc1_r)
-        bn1_i = self.bn1(enc1_i)
-        relu1_r = self.relu1(bn1_r)
-        relu1_i = self.relu1(bn1_i)
-        enc2_r = self.encoder2(relu1_r)
-        enc2_i = self.encoder2(relu1_i)
-
-        enc2 = torch.complex(enc2_r, enc2_i)
-        st_value = self.soft_threshold_complex(enc2)
-
-        dec2_r = self.decoder2(st_value.real)
-        dec2_i = self.decoder2(st_value.imag)
-        bn2_r = self.bn2(dec2_r)
-        bn2_i = self.bn2(dec2_i)
-        relu2_r = self.relu2(bn2_r)
-        relu2_i = self.relu2(bn2_i)
-        dec1_r = self.decoder1(relu2_r)
-        dec1_i = self.decoder1(relu2_i)
-
-        dece_r = self.decoder_e(dec1_r) + z_channeled.real
-        dece_i = self.decoder_e(dec1_i) + z_channeled.imag
-
-        dec_e = torch.complex(dece_r, dece_i)
-        output = torch.squeeze(dec_e, 1)
-
-        return output
-
-
-class UnetWithPretrain(nn.Module):
-    '''
-    Backbone: ResNet18 with pretrain, parameters: 158M(158,713,924)
-    '''
-    def __init__(self, in_channels, kernel_size):
-        super(UnetWithPretrain, self).__init__()
-        resnet = resnet18(pretrained=True)
-        
-        self.initial = nn.Conv2d(in_channels, 3, kernel_size=1)
-
-        self.encoder1 = nn.Sequential(
-            resnet.conv1,
-            resnet.bn1,
-            resnet.relu,
-        )
-        self.encoder2 = resnet.layer1
-        self.encoder3 = resnet.layer2  # out_channels = 128
-        self.encoder4 = resnet.layer3
-        self.encoder5 = resnet.layer4  # out_channels = 512
-
-        self.center = ConvLayer(512, 512, kernel_size)
-
-        self.decoder5 = ConvLayer(1024, 256, kernel_size)
-        self.decoder4 = ConvLayer(512, 128, kernel_size)
-        self.decoder3 = ConvLayer(256, 64, kernel_size)
-        self.decoder2 = ConvLayer(128, 32, kernel_size)
-        self.decoder1 = ConvLayer(32 + 64, 16, kernel_size)
-        self.reshape = ConvLayer(16 + 3, 16, kernel_size)
-
-        self.out = nn.Conv2d(16, in_channels, kernel_size=1)
-
-    def average_pooling(self, encoder, kernel_size=2):
-        encoder_real = F.avg_pool2d(encoder.real, kernel_size)
-        encoder_imag = F.avg_pool2d(encoder.imag, kernel_size)
-
-        return torch.complex(encoder_real, encoder_imag)
-    
-    def interpolate(self, decoder, scale_factor):
-        decoder_real = F.interpolate(decoder.real, scale_factor=scale_factor, 
-                                     mode='bilinear', align_corners=True)
-        decoder_imag = F.interpolate(decoder.imag, scale_factor=scale_factor, 
-                                     mode='bilinear', align_corners=True)
-        
-        return torch.complex(decoder_real, decoder_imag)
-    
-    def layer_forwrd(self, layer: nn.Module, z):
-        real_z = layer(z.real)
-        imag_z = layer(z.imag)
-
-        return torch.complex(real_z, imag_z)
-
-    def forward(self, x, beta):
-        z = torch.add(x, beta)
-        z_channeled = torch.unsqueeze(z, 1)
-
-        initial = self.layer_forwrd(self.initial, z_channeled)  # channel = 3, size = 512
-        enc1 = self.layer_forwrd(self.encoder1, initial)  # channel = 64, size = 256
-        enc2 = self.layer_forwrd(self.encoder2, enc1)
-        enc2 = self.average_pooling(enc2, 2)  # channel = 64, size = 128
-        enc3 = self.layer_forwrd(self.encoder3, enc2)  # channel = 128, size = 64
-        enc4 = self.layer_forwrd(self.encoder4, enc3)  # channel = 256, size = 32
-        enc5 = self.layer_forwrd(self.encoder5, enc4)  # channel = 512, size = 16
-
-        center = self.center(self.average_pooling(enc5, 2))  # channel = 512, size = 8
-
-        dec5 = self.decoder5(torch.cat([self.interpolate(center, scale_factor=2), enc5], 1))  # channel: 1024->256, size = 16
-        dec4 = self.decoder4(torch.cat([self.interpolate(dec5, scale_factor=2), enc4], 1))  # channel: 512->128, size = 32
-        dec3 = self.decoder3(torch.cat([self.interpolate(dec4, scale_factor=2), enc3], 1))  # channel: 256->64, size = 64
-        dec2 = self.decoder2(torch.cat([self.interpolate(dec3, scale_factor=2), enc2], 1))  # channel: 128->32, size = 128
-        dec1 = self.decoder1(torch.cat([self.interpolate(dec2, scale_factor=2), enc1], 1))  # channel: 64+32->16, size = 256
-
-        end = self.reshape(torch.cat([self.interpolate(dec1, scale_factor=2), initial], 1))  # channel: 16+3->16, size = 512
-
-        output = self.layer_forwrd(self.out, end)
-        result = torch.squeeze(output, 1)
-
-        return result
-    
 
 class ConvLayer(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size):
         super(ConvLayer, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size, 
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, 
                                padding=int((kernel_size - 1) / 2))
-        self.bn1 = nn.BatchNorm2d(out_channels)
-        self.relu1 = nn.ReLU(inplace=True)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size, 
-                               padding=int((kernel_size - 1) / 2))
-        self.bn2 = nn.BatchNorm2d(out_channels)
-        self.relu2 = nn.ReLU(inplace=True)
+        self.bn = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ELU()
 
     def forward(self, z):
-        real_conv1 = self.conv1(z.real)
-        imag_conv1 = self.conv1(z.imag)
-        real_bn1 = self.bn1(real_conv1)
-        imag_bn1 = self.bn1(imag_conv1)
-        real_relu1 = self.relu1(real_bn1)
-        imag_relu1 = self.relu1(imag_bn1)
+        conv_r = self.conv(z.real)
+        conv_i = self.conv(z.imag)
+        bn_r = self.bn(conv_r)
+        bn_i = self.bn(conv_i)
+        relu_r = self.relu(bn_r)
+        relu_i = self.relu(bn_i)
 
-        real_conv2 = self.conv2(real_relu1)
-        imag_conv2 = self.conv2(imag_relu1)
-        real_bn2 = self.bn2(real_conv2)
-        imag_bn2 = self.bn2(imag_conv2)
-        real_relu2 = self.relu2(real_bn2)
-        imag_relu2 = self.relu2(imag_bn2)
+        return torch.complex(relu_r, relu_i)
 
-        return torch.complex(real_relu2, imag_relu2)
+
+class SwiftNet(nn.Module):
+    '''
+    Network for z updating with high inference speed
+    Parameters: 
+    '''
+    def __init__(self, in_channels, base_channels, kernel_size):
+        super(SwiftNet, self).__init__()
+        self.encoder1 = ConvLayer(in_channels, base_channels, kernel_size)
+        self.encoder2 = ConvLayer(base_channels, base_channels * 4, kernel_size)
+        self.encoder3 = ConvLayer(base_channels * 4, base_channels * 16, kernel_size)
+
+        self.center = ConvLayer(base_channels * 16, base_channels * 16, kernel_size)
+
+        self.decoder3 = ConvLayer(base_channels * 32, base_channels * 4, kernel_size)
+        self.decoder2 = ConvLayer(base_channels * 8, base_channels, kernel_size)
+        self.decoder1 = ConvLayer(base_channels * 2, base_channels, kernel_size)
+
+        self.out = nn.Conv2d(base_channels, in_channels, kernel_size=1)
+
+    def average_pooling(self, encoder, kernel_size):
+        encoder_r = F.avg_pool2d(encoder.real, kernel_size)
+        encoder_i = F.avg_pool2d(encoder.imag, kernel_size)
+
+        return torch.complex(encoder_r, encoder_i)
     
-
-class ScaleFusionLayer(nn.Module):
-    '''
-    Referred to "RefineNet: Multi-Path Refinement Networks for High-Resolution Semantic Segmentation"
-    Backbone: ResNet50 with pretrain, parameters: 1.7B(1,715,560,384)
-              ResNet34 with pretrain, parameters: 319M(319,373,365)
-    '''
-    def __init__(self, in_channels, kernel_size, device_index, net='resnet34'):
-        super(ScaleFusionLayer, self).__init__()
-        self.device = torch.device(device_index if torch.cuda.is_available() else "cpu")
-        if net == 'resnet50':
-            resnet = resnet50(weights=ResNet50_Weights.DEFAULT)
-            channel_list=[3, 64, 256, 512, 1024, 2048]
-        elif net == 'resnet34':
-            resnet = resnet34(weights=ResNet34_Weights.DEFAULT)
-            channel_list=[3, 64, 64, 128, 256, 512]
-        elif net == 'resnet18':
-            resnet = resnet18(weights=ResNet18_Weights.DEFAULT)
-            channel_list=[3, 64, 64, 128, 256, 512]
-        else:
-            raise ValueError(f'Unknown ResNet type {net} found!')
+    def interpolate(self, decoder, scale_factor):
+        decoder_r = F.interpolate(decoder.real, scale_factor=scale_factor, 
+                                     mode='bilinear', align_corners=True)
+        decoder_i = F.interpolate(decoder.imag, scale_factor=scale_factor, 
+                                     mode='bilinear', align_corners=True)
         
-        self.initial = nn.Conv2d(in_channels, 3, kernel_size=1)
+        return torch.complex(decoder_r, decoder_i)
 
-        self.encoder1 = nn.Sequential(
-            resnet.conv1,
-            resnet.bn1,
-            resnet.relu,
-        )  # in_channels = 3, out_channels = 64 for resnet50
-        self.encoder2 = nn.Sequential(
-            resnet.maxpool, 
-            resnet.layer1, 
-        )  # in_channels = 64, out_channels = 256  
-        self.encoder3 = resnet.layer2  # in_channels = 256, out_channels = 512
-        self.encoder4 = resnet.layer3  # in_channels = 512, out_channels = 1024
-        self.encoder5 = resnet.layer4  # in_channels = 1024, out_channels = 2048
-
-        self.rcu0 = ResidualUnit(channel_list[0], kernel_size)
-        self.rcu1 = ResidualUnit(channel_list[1], kernel_size)
-        self.rcu2 = ResidualUnit(channel_list[2], kernel_size)
-        self.rcu3 = ResidualUnit(channel_list[3], kernel_size)
-        self.rcu4 = ResidualUnit(channel_list[4], kernel_size)
-        self.rcu5 = ResidualUnit(channel_list[5], kernel_size)
-
-        self.fb4 = FusionBlock(channel_list[4], channel_list[5], kernel_size, self.device)
-        self.fb3 = FusionBlock(channel_list[3], channel_list[4], kernel_size, self.device)
-        self.fb2 = FusionBlock(channel_list[2], channel_list[3], kernel_size, self.device)
-        self.fb1 = FusionBlock(channel_list[1], channel_list[2], kernel_size, self.device)
-        self.fb0 = FusionBlock(channel_list[0], channel_list[1], kernel_size, self.device)
-
-        self.out = nn.Sequential(
-            nn.Conv2d(channel_list[0], channel_list[0], kernel_size=3, padding=1),
-            nn.BatchNorm2d(channel_list[0]),
-            nn.ReLU(inplace=False),
-            nn.Conv2d(channel_list[0], in_channels, kernel_size=1, bias=False),
-        )
-
-    def layer_forwrd(self, layer: nn.Module, z):
-        real_z = layer(z.real)
-        imag_z = layer(z.imag)
-
-        return torch.complex(real_z, imag_z)
-    
     def forward(self, x, beta):
         z = torch.add(x, beta)
         z_channeled = torch.unsqueeze(z, 1)
 
-        initial = self.layer_forwrd(self.initial, z_channeled)  # channel = 3, size = 512 for resnet50
-        enc1 = self.layer_forwrd(self.encoder1, initial)  # channel = 64, size = 256
-        enc2 = self.layer_forwrd(self.encoder2, enc1)  # channel = 256, size = 128
-        enc3 = self.layer_forwrd(self.encoder3, enc2)  # channel = 512, size = 64
-        enc4 = self.layer_forwrd(self.encoder4, enc3)  # channel = 1024, size = 32
-        enc5 = self.layer_forwrd(self.encoder5, enc4)  # channel = 2048, size = 16
+        enc1 = self.encoder1(z_channeled)  # channel = 8, size = 512
+        enc2 = self.encoder2(self.average_pooling(enc1, 4))  # channel = 32, size = 128
+        enc3 = self.encoder3(self.average_pooling(enc2, 4))  # channel = 128, size = 32
 
-        ru0 = self.rcu0(initial)
-        ru1 = self.rcu1(enc1)
-        ru2 = self.rcu2(enc2)
-        ru3 = self.rcu3(enc3)
-        ru4 = self.rcu4(enc4)
-        ru5 = self.rcu5(enc5)
+        center = self.center(self.average_pooling(enc3, 2))  # channel = 128, size = 16
 
-        fusion4 = self.fb4(ru4, ru5)  # channel: 1024, 2048->1024, size = 32
-        fusion3 = self.fb3(ru3, fusion4)  # channel: 512, 1024->512, size = 64
-        fusion2 = self.fb2(ru2, fusion3)  # channel: 256, 512->256, size = 128
-        fusion1 = self.fb1(ru1, fusion2)  # channel: 64, 256->256, size = 256
-        fusion0 = self.fb0(ru0, fusion1)  # channel: 3, 64->3, size = 512
+        dec3 = self.decoder3(torch.cat([self.interpolate(center, scale_factor=2), enc3], 1))
+        dec2 = self.decoder2(torch.cat([self.interpolate(dec3, scale_factor=4), enc2], 1))
+        dec1 = self.decoder1(torch.cat([self.interpolate(dec2, scale_factor=4), enc1], 1))
+        output_r = self.out(dec1.real)
+        output_i = self.out(dec1.imag)
+        output = torch.complex(output_r, output_i)
 
-        output = self.layer_forwrd(self.out, fusion0)
         result = torch.squeeze(output, 1)
 
         return result
 
 
-class ResidualUnit(nn.Module):
+class ProNet(nn.Module):
     '''
-    Residual Convolution Unit cited from: 
-    "RefineNet: Multi-Path Refinement Networks for High-Resolution Semantic Segmentation"
+    Network for z updating of precise reconstruction
+    Parameters:  
     '''
-    def __init__(self, in_channels, kernel_size):
-        super(ResidualUnit, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels, in_channels, kernel_size, 
-                               padding=int((kernel_size - 1) / 2), bias=False)  # keep data consistent, bias = False
-        self.bn1 = nn.BatchNorm2d(in_channels)
-        self.relu1 = nn.ReLU(inplace=False)
-        self.conv2 = nn.Conv2d(in_channels, in_channels, kernel_size, 
-                               padding=int((kernel_size - 1) / 2), bias=False)
-        self.bn2 = nn.BatchNorm2d(in_channels)
-        self.relu2 = nn.ReLU(inplace=False)
-    
-    def forward(self, z):
-        real_conv1 = self.conv1(z.real)
-        imag_conv1 = self.conv1(z.imag)
-        real_bn1 = self.bn1(real_conv1)
-        imag_bn1 = self.bn1(imag_conv1)
-        real_relu = self.relu1(real_bn1)
-        imag_relu = self.relu1(imag_bn1)
+    def __init__(self, in_channels, base_channels, kernel_size):
+        super(ProNet, self).__init__()
+        padding = int((kernel_size - 1) / 2)
 
-        real_conv2 = self.conv2(real_relu)
-        imag_conv2 = self.conv2(imag_relu)
-        real_bn2 = self.bn2(real_conv2)
-        imag_bn2 = self.bn2(imag_conv2)
-        real_relu2 = self.relu2(real_bn2)
-        imag_relu2 = self.relu2(imag_bn2)
+        self.encoder_i = nn.Conv2d(in_channels, base_channels, kernel_size, padding=padding)
+        self.encoder_1 = nn.Conv2d(base_channels, base_channels * 4, kernel_size, padding=padding)
+        self.bn_1 = nn.BatchNorm2d(base_channels * 4)
+        self.relu_1 = nn.ELU()
+        self.encoder_2 = nn.Conv2d(base_channels * 4, base_channels * 8, kernel_size, padding=padding)
 
-        return torch.complex(real_relu2, imag_relu2) + z
+        self.threshold = nn.ELU()
 
+        self.decoder_2 = nn.Conv2d(base_channels * 8, base_channels * 4, kernel_size, padding=padding)
+        self.bn_2 = nn.BatchNorm2d(base_channels * 4)
+        self.relu_2 = nn.ELU()
+        self.decoder_1 = nn.Conv2d(base_channels * 4, base_channels, kernel_size, padding=padding)
+        self.decoder_e = nn.Conv2d(base_channels, in_channels, kernel_size, padding=padding)
 
-class FusionBlock(nn.Module):
-    '''
-    Multi-resolution feature map fusion block cited from: 
-    "RefineNet: Multi-Path Refinement Networks for High-Resolution Semantic Segmentation"
-    '''
-    def __init__(self, in_channels, scaled_channels, kernel_size, device, scale_factor=2):
-        super(FusionBlock, self).__init__()
-        self.scale_factor = scale_factor
-        self.haar = ChainedHaarSampling(in_channels, kernel_size, device)
-        self.conv_l = nn.Conv2d(in_channels, in_channels, kernel_size, 
-                                padding=int((kernel_size - 1) / 2), bias=False)
-        self.conv_s = nn.Conv2d(scaled_channels, scaled_channels, kernel_size, 
-                                padding=int((kernel_size - 1) / 2), bias=False)
-        self.conv = nn.Conv2d(in_channels * 5 + scaled_channels, in_channels, kernel_size=1)
-        self.bn = nn.BatchNorm2d(in_channels)
-        self.relu = nn.ReLU(inplace=False)
-    
-    def forward(self, feature, feature_s):
-        haar_feature = self.haar(feature)  # size -> size/2, channels = in_channels * 4 
-        real_feature = self.conv_l(feature.real)
-        imag_feature = self.conv_l(feature.imag)
-
-        real_feature_s = self.conv_s(feature_s.real)
-        imag_feature_s = self.conv_s(feature_s.imag)
-
-        real_feature_s = torch.cat([real_feature_s, haar_feature.real], 1) 
-        imag_feature_s = torch.cat([imag_feature_s, haar_feature.imag], 1)
-        real_interp = F.interpolate(real_feature_s, scale_factor=self.scale_factor, 
-                                    mode='bilinear', align_corners=True)
-        imag_interp = F.interpolate(imag_feature_s, scale_factor=self.scale_factor, 
-                                    mode='bilinear', align_corners=True)
-        
-        real_concat = torch.cat([real_interp, real_feature], 1)
-        imag_concat = torch.cat([imag_interp, imag_feature], 1)
-
-        real_conv = self.conv(real_concat)
-        imag_conv = self.conv(imag_concat)
-        real_bn = self.bn(real_conv)
-        imag_bn = self.bn(imag_conv)
-        real_relu = self.relu(real_bn)
-        imag_relu = self.relu(imag_bn)
-
-        return torch.complex(real_relu, imag_relu)
-
-
-class ChainedHaarSampling(nn.Module):
-    def __init__(self, in_channels, kernel_size, device):
-        super(ChainedHaarSampling, self).__init__()
-        self.device = device
-        self.conv1 = nn.Conv2d(in_channels, in_channels, 
-                               kernel_size, padding=int((kernel_size - 1) / 2))
-        self.conv2 = nn.Conv2d(in_channels, in_channels, 
-                               kernel_size, padding=int((kernel_size - 1) / 2))
-        self.conv3 = nn.Conv2d(in_channels, in_channels, 
-                               kernel_size, padding=int((kernel_size - 1) / 2))
-        self.conv4 = nn.Conv2d(in_channels, in_channels, 
-                               kernel_size, padding=int((kernel_size - 1) / 2))
-        
-    def dwt_downsampling(self, feature):
-        dwt = DWTForward(J=1, mode='zero', wave='haar').to(self.device)
-        coeffs_real = dwt(feature.real)
-        coeffs_imag = dwt(feature.imag)
-        ll_real, h_real = coeffs_real
-        ll_imag, h_imag = coeffs_imag
-        h_real, h_imag = h_real[0], h_imag[0]
-        
-        lh_real, hl_real, hh_real = h_real[:,:,0,:,:], h_real[:,:,1,:,:], h_real[:,:,2,:,:]
-        lh_imag, hl_imag, hh_imag = h_imag[:,:,0,:,:], h_imag[:,:,1,:,:], h_imag[:,:,2,:,:]
-
-        ll = torch.complex(ll_real, ll_imag)
-        lh = torch.complex(lh_real, lh_imag)
-        hl = torch.complex(hl_real, hl_imag)
-        hh = torch.complex(hh_real, hh_imag)
-        
-        return ll, lh, hl, hh
-    
     def layer_forwrd(self, layer: nn.Module, feature):
-        real_feature = layer(feature.real)
-        imag_feature = layer(feature.imag)
+        feature_r = layer(feature.real)
+        feature_i = layer(feature.imag)
 
-        return torch.complex(real_feature, imag_feature)
-    
-    def forward(self, feature):
-        ll, lh, hl, hh = self.dwt_downsampling(feature)
-        ll_conv = self.layer_forwrd(self.conv1, ll)  # in_channels
-        lh_conv = self.layer_forwrd(self.conv2, lh)
-        hl_conv = self.layer_forwrd(self.conv3, hl)
-        hh_conv = self.layer_forwrd(self.conv4, hh)
+        return torch.complex(feature_r, feature_i)
 
-        out = torch.cat([ll_conv, lh_conv, hl_conv, hh_conv], 1)  # in_channels * 4
+    def forward(self, x, beta):
+        z = torch.add(x, beta)
+        z_channeled = torch.unsqueeze(z, 1)
 
-        return out
+        enci = self.layer_forwrd(self.encoder_i, z_channeled)
+        enc1 = self.layer_forwrd(self.encoder_1, enci)
+        bn1 = self.layer_forwrd(self.bn_1, enc1)
+        relu1 = self.layer_forwrd(self.relu_1, bn1)
+        enc2 = self.layer_forwrd(self.encoder_2, relu1)
+
+        relu_c = self.layer_forwrd(self.threshold, enc2)
+
+        dec2 = self.layer_forwrd(self.decoder_2, relu_c)
+        bn2 = self.layer_forwrd(self.bn_2, dec2)
+        relu2 = self.layer_forwrd(self.relu_2, bn2)
+        dec1 = self.layer_forwrd(self.decoder_1, relu2)
+
+        dece = self.layer_forwrd(self.decoder_e, dec1) + z_channeled
+        output = torch.squeeze(dece, 1)
+
+        return output

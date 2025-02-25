@@ -181,12 +181,11 @@ def main(args):
 
     if network == 'arsar':
         model = ARSARNet(
-            device_index, 
+            device, 
             processor, 
             down_matrix, 
             up_matrix, 
             args.layer_num, 
-            args.internal_iteration,
             args.regularization,
             ).to(device)
     elif network == 'pnp':
