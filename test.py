@@ -112,13 +112,13 @@ def figure_generate(output_dict, index, down_rate):
         plt.subplot(2, 2, 3)
         plt.imshow(output_dict['alias'][index[0]], cmap="gray", origin="lower")
         alias_psnr = round(output_dict['alias_psnr'][index[0]], 2)
-        plt.title(f'Aliasing Image, PSNR={alias_psnr} dB')
+        plt.title(f'Aliasing Image, PSNR={alias_psnr:.2f} dB')
         plt.axis('off')
 
         plt.subplot(2, 2, 4)
         plt.imshow(output_dict['rec'][index[0]], cmap="gray", origin="lower")
         rec_psnr = round(output_dict['rec_psnr'][index[0]], 2)
-        plt.title(f'Reconstructed Image, PSNR={rec_psnr} dB')
+        plt.title(f'Reconstructed Image, PSNR={rec_psnr:.2f} dB')
         plt.axis('off')
 
         plt.subplots_adjust(left=0.1, right=0.9, top=0.9, bottom=0.1, wspace=0.2, hspace=0.3)
@@ -142,13 +142,13 @@ def figure_generate(output_dict, index, down_rate):
             plt.subplot(2, 2, 3)
             plt.imshow(output_dict['alias'][num], cmap="gray", origin="lower")
             alias_psnr = round(output_dict['alias_psnr'][num], 2)
-            plt.title(f'Aliasing Image, PSNR={alias_psnr} dB')
+            plt.title(f'Aliasing Image, PSNR={alias_psnr:.2f} dB')
             plt.axis('off')
 
             plt.subplot(2, 2, 4)
             plt.imshow(output_dict['rec'][num], cmap="gray", origin="lower")
             rec_psnr = round(output_dict['rec_psnr'][num], 2)
-            plt.title(f'Reconstructed Image, PSNR={rec_psnr} dB')
+            plt.title(f'Reconstructed Image, PSNR={rec_psnr:.2f} dB')
             plt.axis('off')
 
             plt.subplots_adjust(left=0.1, right=0.9, top=0.9, bottom=0.1, wspace=0.2, hspace=0.3)

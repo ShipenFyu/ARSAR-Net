@@ -3,7 +3,7 @@ from torch.fft import fft, ifft, fftshift, ifftshift
 
 
 def ista_l1_one_object(image, echo, processor: dict, down_matrix, up_matrix, 
-                       device_index, sparse_thr=200, length=5, res_thr=1e-10, maxiter=50):
+                       device, sparse_thr=200, length=5, res_thr=1e-10, maxiter=50):
     """
     L1 regularized ISTA implementation with GPU acceleration
     
@@ -13,7 +13,7 @@ def ista_l1_one_object(image, echo, processor: dict, down_matrix, up_matrix,
         processor (dict): System parameters dictionary
         down_matrix (torch.Tensor): Downsampling matrix
         up_matrix (torch.Tensor): Upsampling matrix
-        device_index (str): Device index ('cuda' or 'cpu')
+        device (str): Device for torch('cuda' or 'cpu')
         sparse_thr (int): Sparsity threshold, the maximum number of non-zero points
         length (int): Iteration step
         res_thr (float): Convergence residual threshold
@@ -22,7 +22,6 @@ def ista_l1_one_object(image, echo, processor: dict, down_matrix, up_matrix,
     return :
         torch.Tensor: Reconstrucation SAR image
     """
-    device = torch.device(device_index if torch.cuda.is_available() else "cpu")
     echo = echo.to(device)
     
     # initialize
@@ -58,8 +57,8 @@ def ista_l1_one_object(image, echo, processor: dict, down_matrix, up_matrix,
     return rst
 
 
-def admm_tv_one_object(image, echo, processor: dict, up_matrix, device_index, 
-                       rho=0.5, eta=0.2, res_thr=1e-10, maxiter=50):
+def admm_tv_one_object(image, echo, processor: dict, up_matrix, device, 
+                       lambda_tv=0.1, rho=0.5, eta=0.2, res_thr=1e-10, maxiter=50):
     """
     TV regularized ADMM implementation with GPU acceleration
     
@@ -67,18 +66,17 @@ def admm_tv_one_object(image, echo, processor: dict, up_matrix, device_index,
         image (torch.Tensor): Initial image estimate
         echo (torch.Tensor): Input echo matrix (measurements)
         processor (dict): System parameters dictionary
-        down_matrix (torch.Tensor): Downsampling matrix
         up_matrix (torch.Tensor): Upsampling matrix
-        device_index (str): Device index ('cuda' or 'cpu')
+        device (str): Device for torch ('cuda' or 'cpu')
         lambda_tv (float): TV regularization parameter
         rho (float): ADMM penalty parameter
+        eta (float): ADMM dual variable parameter
         res_thr (float): Convergence threshold
         maxiter (int): Maximum number of iterations
     
     return:
         torch.Tensor: Reconstructed SAR image
     """
-    device = torch.device(device_index if torch.cuda.is_available() else "cpu")
     echo = echo.to(device)
     
     # Initialize variables
@@ -98,7 +96,7 @@ def admm_tv_one_object(image, echo, processor: dict, up_matrix, device_index,
         x = trivial_value + penalty
         
         # 2. z-update (TV proximal operator)
-        tv_processor = TotalVarProces(iteration=6)
+        tv_processor = TotalVarProces(lambda_tv, iteration=3)
         z = tv_processor.forward(x, u)
         
         # 3. Dual variable update
@@ -148,7 +146,8 @@ def echo_operator(image, down_matrix, processor, device):
 
 
 class TotalVarProces:
-    def __init__(self, iteration):
+    def __init__(self, lambda_tv, iteration):
+        self.lambda_tv = lambda_tv
         self.iteration = iteration
 
         self.miu_1 = 0.5
@@ -183,7 +182,7 @@ class TotalVarProces:
     def additional_update(self, z, residual, grad):
         mid_value = torch.add(self.miu_1 * z, self.miu_2 * residual)
 
-        return torch.sub(mid_value, grad)
+        return torch.sub(mid_value, self.lambda_tv * grad)
     
     def forward(self, x, beta):
         residual = torch.add(x, beta)

@@ -180,26 +180,38 @@ class MultipleLayer(nn.Module):
 class ConvLayer(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size):
         super(ConvLayer, self).__init__()
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, 
-                               padding=int((kernel_size - 1) / 2))
-        self.bn = nn.BatchNorm2d(out_channels)
-        self.relu = nn.ELU()
+        self.conv_1 = nn.Conv2d(in_channels, out_channels, kernel_size, 
+                                padding=int((kernel_size - 1) / 2))
+        self.bn_1 = nn.BatchNorm2d(out_channels)
+        self.relu_1 = nn.ELU()
+
+        self.conv_2 = nn.Conv2d(out_channels, out_channels, kernel_size, 
+                                padding=int((kernel_size - 1) / 2))
+        self.bn_2 = nn.BatchNorm2d(out_channels)
+        self.relu_2 = nn.ELU()
 
     def forward(self, z):
-        conv_r = self.conv(z.real)
-        conv_i = self.conv(z.imag)
-        bn_r = self.bn(conv_r)
-        bn_i = self.bn(conv_i)
-        relu_r = self.relu(bn_r)
-        relu_i = self.relu(bn_i)
+        conv1_r = self.conv_1(z.real)
+        conv1_i = self.conv_1(z.imag)
+        bn1_r = self.bn_1(conv1_r)
+        bn1_i = self.bn_1(conv1_i)
+        relu1_r = self.relu_1(bn1_r)
+        relu1_i = self.relu_1(bn1_i)
 
-        return torch.complex(relu_r, relu_i)
+        conv2_r = self.conv_2(relu1_r)
+        conv2_i = self.conv_2(relu1_i)
+        bn2_r = self.bn_2(conv2_r)
+        bn2_i = self.bn_2(conv2_i)
+        relu2_r = self.relu_2(bn2_r)
+        relu2_i = self.relu_2(bn2_i)
+
+        return torch.complex(relu2_r, relu2_i)
 
 
 class SwiftNet(nn.Module):
     '''
     Network for z updating with high inference speed
-    Parameters: 
+    Parameters: 1.3M(1,317,334)
     '''
     def __init__(self, in_channels, base_channels, kernel_size):
         super(SwiftNet, self).__init__()
@@ -253,8 +265,8 @@ class SwiftNet(nn.Module):
 
 class ProNet(nn.Module):
     '''
-    Network for z updating of precise reconstruction
-    Parameters:  
+    Network of precise reconstruction for z updating
+    Parameters: 1.5M(1,500,502)
     '''
     def __init__(self, in_channels, base_channels, kernel_size):
         super(ProNet, self).__init__()
