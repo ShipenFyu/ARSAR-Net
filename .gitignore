@@ -18,6 +18,7 @@ weights/*
 # python script for exam
 exam.py
 downsampling.py
+simulate.py
 
 # images
 images/*

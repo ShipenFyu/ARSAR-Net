@@ -3,7 +3,7 @@ from torch.fft import fft, ifft, fftshift, ifftshift
 
 
 def ista_l1_one_object(image, echo, processor: dict, down_matrix, up_matrix, 
-                       device, sparse_thr=200, length=5, res_thr=1e-10, maxiter=50):
+                       device, sparse_thr=0.002, length=5, res_thr=1e-6, maxiter=30):
     """
     L1 regularized ISTA implementation with GPU acceleration
     
@@ -37,13 +37,8 @@ def ista_l1_one_object(image, echo, processor: dict, down_matrix, up_matrix,
         rst = rst + imaging_operator(residual, up_matrix, processor, device) / length
 
         abs_rst = torch.abs(rst)
-        flatten_abs = abs_rst.flatten()
-        # sort in descending order, and take No.[sparse_thr] element as the threshold
-        if len(flatten_abs) > sparse_thr:
-            threshold = torch.sort(flatten_abs, descending=True).values[sparse_thr]
-        else:
-            threshold = 0.0
-
+        
+        threshold = sparse_thr * abs_rst.max()  # soft threshold
         rst = torch.where(abs_rst > threshold, 
                           (rst / (abs_rst + 1e-16)) * (abs_rst - threshold), 
                           torch.tensor(0.0, dtype=rst.dtype, device=device))
@@ -57,8 +52,8 @@ def ista_l1_one_object(image, echo, processor: dict, down_matrix, up_matrix,
     return rst
 
 
-def admm_tv_one_object(image, echo, processor: dict, up_matrix, device, 
-                       lambda_tv=0.1, rho=0.5, eta=0.2, res_thr=1e-10, maxiter=50):
+def admm_tv_one_object(image, echo, processor: dict, down_matrix, up_matrix, device, 
+                       lambda_tv=0.1, rho=0.5, eta=0.2, res_thr=1e-6, maxiter=30):
     """
     TV regularized ADMM implementation with GPU acceleration
     
@@ -85,18 +80,19 @@ def admm_tv_one_object(image, echo, processor: dict, up_matrix, device,
     z = torch.zeros((nslow, nfast), dtype=torch.complex64, device=device)  # Auxiliary variable for gradient
     u = torch.zeros((nslow, nfast), dtype=torch.complex64, device=device)  # Dual variable 
     
-    trivial_value = imaging_operator(echo, up_matrix, processor, device)
     iter_num = 0
     res = 1
     
     while iter_num < maxiter and res > res_thr:
         # 1. x-update (Data reconstruction step)
         x_prev = x.clone()
-        penalty = rho * (z - u) -rho * x
+        x_down = echo_operator(x, down_matrix, processor, device)
+        trivial_value = imaging_operator(echo - x_down, up_matrix, processor, device)
+        penalty = rho / 2 * (z - u) + (1 - rho) * x
         x = trivial_value + penalty
         
         # 2. z-update (TV proximal operator)
-        tv_processor = TotalVarProces(lambda_tv, iteration=3)
+        tv_processor = TotalVarProces(lambda_tv, iteration=2)
         z = tv_processor.forward(x, u)
         
         # 3. Dual variable update

@@ -1,8 +1,6 @@
 import numpy as np
 import torch
 
-# Variables of training
-device_index = 'cuda:0'
 
 # Configuration of SAR
 C = 299792458

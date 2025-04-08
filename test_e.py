@@ -10,7 +10,7 @@ from tqdm import tqdm
 from utils.observation_matrix import random_sampling_create
 from utils.evaluate import range_cut, nrmse_evaluate, psnr_evaluate, ssim_evaluate, aliasing_construct
 from utils.config import processor
-from models.solver import ista_l1_one_object, admm_tv_one_object
+from models.solver import ista_l1_one_object, admm_tv_one_object, imaging_operator
 
 
 def get_args():
@@ -34,7 +34,9 @@ def test_algorithm(test_image, test_echo, regular, down_matrix, up_matrix, devic
             rst = ista_l1_one_object(image_example, echo, processor, 
                                      down_matrix, up_matrix, device)
         elif regular == 'tv':
-            rst = admm_tv_one_object(image_example, echo, processor, up_matrix, device)
+            rst = admm_tv_one_object(image_example, echo, processor, down_matrix, up_matrix, device)
+        elif regular == 'csa':
+            rst = imaging_operator(echo, up_matrix, processor, device)
         else:
             raise ValueError(f'Unknown regularization type found: {regular}!')
         rec[i] = rst

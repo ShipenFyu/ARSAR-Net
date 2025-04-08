@@ -39,6 +39,9 @@ def psnr_evaluate(image, rec):
 
 
 def psnr_mean(psnr):
+    '''
+    Optional function for psnr mean
+    '''
     psnr = torch.as_tensor(psnr)
     psnr_p = 10 ** (psnr / 10)
 
