@@ -19,6 +19,7 @@ weights/*
 exam.py
 downsampling.py
 simulate.py
+figure.py
 
 # images
 images/*

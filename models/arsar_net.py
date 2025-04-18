@@ -211,18 +211,18 @@ class ConvLayer(nn.Module):
 class SwiftNet(nn.Module):
     '''
     Network for z updating with high inference speed
-    Parameters: 1.3M(1,317,334)
+    Parameters: 256k(256,342)
     '''
     def __init__(self, in_channels, base_channels, kernel_size):
         super(SwiftNet, self).__init__()
         self.encoder1 = ConvLayer(in_channels, base_channels, kernel_size)
-        self.encoder2 = ConvLayer(base_channels, base_channels * 4, kernel_size)
-        self.encoder3 = ConvLayer(base_channels * 4, base_channels * 16, kernel_size)
+        self.encoder2 = ConvLayer(base_channels, base_channels * 3, kernel_size)
+        self.encoder3 = ConvLayer(base_channels * 3, base_channels * 6, kernel_size)
 
-        self.center = ConvLayer(base_channels * 16, base_channels * 16, kernel_size)
+        self.center = ConvLayer(base_channels * 6, base_channels * 6, kernel_size)
 
-        self.decoder3 = ConvLayer(base_channels * 32, base_channels * 4, kernel_size)
-        self.decoder2 = ConvLayer(base_channels * 8, base_channels, kernel_size)
+        self.decoder3 = ConvLayer(base_channels * 12, base_channels * 3, kernel_size)
+        self.decoder2 = ConvLayer(base_channels * 6, base_channels, kernel_size)
         self.decoder1 = ConvLayer(base_channels * 2, base_channels, kernel_size)
 
         self.out = nn.Conv2d(base_channels, in_channels, kernel_size=1)
@@ -245,11 +245,11 @@ class SwiftNet(nn.Module):
         z = torch.add(x, beta)
         z_channeled = torch.unsqueeze(z, 1)
 
-        enc1 = self.encoder1(z_channeled)  # channel = 8, size = 512
-        enc2 = self.encoder2(self.average_pooling(enc1, 4))  # channel = 32, size = 128
-        enc3 = self.encoder3(self.average_pooling(enc2, 4))  # channel = 128, size = 32
+        enc1 = self.encoder1(z_channeled)  # channel = 4, size = 512
+        enc2 = self.encoder2(self.average_pooling(enc1, 4))  # channel = 12, size = 128
+        enc3 = self.encoder3(self.average_pooling(enc2, 4))  # channel = 24, size = 32
 
-        center = self.center(self.average_pooling(enc3, 2))  # channel = 128, size = 16
+        center = self.center(self.average_pooling(enc3, 2))  # channel = 24, size = 16
 
         dec3 = self.decoder3(torch.cat([self.interpolate(center, scale_factor=2), enc3], 1))
         dec2 = self.decoder2(torch.cat([self.interpolate(dec3, scale_factor=4), enc2], 1))
@@ -266,24 +266,28 @@ class SwiftNet(nn.Module):
 class ProNet(nn.Module):
     '''
     Network of precise reconstruction for z updating
-    Parameters: 1.5M(1,500,502)
+    Parameters: 338k(338,278)
     '''
     def __init__(self, in_channels, base_channels, kernel_size):
         super(ProNet, self).__init__()
         padding = int((kernel_size - 1) / 2)
 
         self.encoder_i = nn.Conv2d(in_channels, base_channels, kernel_size, padding=padding)
-        self.encoder_1 = nn.Conv2d(base_channels, base_channels * 4, kernel_size, padding=padding)
-        self.bn_1 = nn.BatchNorm2d(base_channels * 4)
+        self.bn_1 = nn.BatchNorm2d(base_channels)
         self.relu_1 = nn.ELU()
-        self.encoder_2 = nn.Conv2d(base_channels * 4, base_channels * 8, kernel_size, padding=padding)
-
-        self.threshold = nn.ELU()
-
-        self.decoder_2 = nn.Conv2d(base_channels * 8, base_channels * 4, kernel_size, padding=padding)
-        self.bn_2 = nn.BatchNorm2d(base_channels * 4)
+        self.encoder_1 = nn.Conv2d(base_channels, base_channels * 2, kernel_size, padding=padding)
+        self.bn_2 = nn.BatchNorm2d(base_channels * 2)
         self.relu_2 = nn.ELU()
-        self.decoder_1 = nn.Conv2d(base_channels * 4, base_channels, kernel_size, padding=padding)
+        self.encoder_2 = nn.Conv2d(base_channels * 2, base_channels * 3, kernel_size, padding=padding)
+        self.bn_3 = nn.BatchNorm2d(base_channels * 3)
+        self.relu_3 = nn.ELU()
+
+        self.decoder_2 = nn.Conv2d(base_channels * 3, base_channels * 2, kernel_size, padding=padding)
+        self.bn_4 = nn.BatchNorm2d(base_channels * 2)
+        self.relu_4 = nn.ELU()
+        self.decoder_1 = nn.Conv2d(base_channels * 2, base_channels, kernel_size, padding=padding)
+        self.bn_5 = nn.BatchNorm2d(base_channels)
+        self.relu_5 = nn.ELU()
         self.decoder_e = nn.Conv2d(base_channels, in_channels, kernel_size, padding=padding)
 
     def layer_forwrd(self, layer: nn.Module, feature):
@@ -297,19 +301,22 @@ class ProNet(nn.Module):
         z_channeled = torch.unsqueeze(z, 1)
 
         enci = self.layer_forwrd(self.encoder_i, z_channeled)
-        enc1 = self.layer_forwrd(self.encoder_1, enci)
-        bn1 = self.layer_forwrd(self.bn_1, enc1)
+        bn1 = self.layer_forwrd(self.bn_1, enci)
         relu1 = self.layer_forwrd(self.relu_1, bn1)
-        enc2 = self.layer_forwrd(self.encoder_2, relu1)
-
-        relu_c = self.layer_forwrd(self.threshold, enc2)
-
-        dec2 = self.layer_forwrd(self.decoder_2, relu_c)
-        bn2 = self.layer_forwrd(self.bn_2, dec2)
+        enc1 = self.layer_forwrd(self.encoder_1, relu1)
+        bn2 = self.layer_forwrd(self.bn_2, enc1)
         relu2 = self.layer_forwrd(self.relu_2, bn2)
-        dec1 = self.layer_forwrd(self.decoder_1, relu2)
+        enc2 = self.layer_forwrd(self.encoder_2, relu2)
+        bn3 = self.layer_forwrd(self.bn_3, enc2)
+        relu3 = self.layer_forwrd(self.relu_3, bn3)
 
-        dece = self.layer_forwrd(self.decoder_e, dec1) + z_channeled
+        dec2 = self.layer_forwrd(self.decoder_2, relu3)
+        bn4 = self.layer_forwrd(self.bn_4, dec2)
+        relu4 = self.layer_forwrd(self.relu_4, bn4)
+        dec1 = self.layer_forwrd(self.decoder_1, relu4)
+        bn5 = self.layer_forwrd(self.bn_5, dec1)
+        relu5 = self.layer_forwrd(self.relu_5, bn5)
+        dece = self.layer_forwrd(self.decoder_e, relu5) + z_channeled
         output = torch.squeeze(dece, 1)
 
         return output

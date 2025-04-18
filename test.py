@@ -217,7 +217,7 @@ def main(args):
     with warnings.catch_warnings():
         # avoid FutureWarning for 'weights_only=False'
         warnings.simplefilter("ignore", category=FutureWarning)
-        model.load_state_dict(torch.load(weight_path)['model_state_dict'])
+        model.load_state_dict(torch.load(weight_path, map_location=device)['model_state_dict'])
     model.eval()
     print('Weight File Loaded!')
 

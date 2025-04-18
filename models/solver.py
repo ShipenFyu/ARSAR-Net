@@ -3,7 +3,7 @@ from torch.fft import fft, ifft, fftshift, ifftshift
 
 
 def ista_l1_one_object(image, echo, processor: dict, down_matrix, up_matrix, 
-                       device, sparse_thr=0.002, length=5, res_thr=1e-6, maxiter=30):
+                       device, sparse_thr=0.01, length=5, res_thr=1e-6, maxiter=30):
     """
     L1 regularized ISTA implementation with GPU acceleration
     
