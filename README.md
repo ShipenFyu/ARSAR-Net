@@ -1,6 +1,6 @@
 # ARSAR-Net: Adaptively Regularized SAR Imaging Network with Efficient Unfolding
 
-**This paper has been accepted by SCIENCE CHINA Information Sciences. [[PDF]](https://arxiv.org/pdf/2506.18324)**
+**This paper has been accepted by SCIENCE CHINA Information Sciences. [[arxiv page]](https://arxiv.org/abs/2506.18324)**
 
 **Fu S P, Chen Y F, Zhang Z, et al. Adaptively regularized SAR imaging network with efficient unfolding. Sci China Inf Sci,
 2026, 69(8): 180306, https://doi.org/10.1007/s11432-025-5024-2**
