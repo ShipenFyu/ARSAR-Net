@@ -1,5 +1,6 @@
-# pycharm config
+# config
 .idea/
+.vscode/
 
 # cache
 __pycache__/
@@ -32,6 +33,7 @@ images/*
 figures/
 summary/
 *.md
+!README.md
 *.pdf
 *.pptx
 *.png

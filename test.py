@@ -20,11 +20,12 @@ from models.sr_net import SRNet
 
 def get_args():
     parser = argparse.ArgumentParser(description='ARSAR-Net Testing')
-    parser.add_argument('--tst_dataset', default='./data/concat', help='Testing dataset directory')
-    parser.add_argument('--weight', default="/media/Disk1/FuShiping/weights/concat/2025_02_05/downsample_0.5_epochs_97_17_29_05.pt")
-    parser.add_argument('--device', default='cuda:3', help='The device index used in testing')
+    parser.add_argument('--test_image', required=True, help='Path to the test image .npy file')
+    parser.add_argument('--test_echo', required=True, help='Path to the test echo .npy file')
+    parser.add_argument('--weight', required=True, help='Path to the model checkpoint')
+    parser.add_argument('--device', default='cuda:0', help='The device index used in testing')
     parser.add_argument('--network', default='arsar', help='Backbone network (sr, pnp or arsar)')
-    parser.add_argument('--regularization', default='haar', help='The regularization type in ARSAR-Net')
+    parser.add_argument('--regularization', default='swift', help='ARSAR-Net variant (swift or pro)')
     parser.add_argument('--batch_size', default=4, type=int, help='Batch size for testing')
     parser.add_argument('--layer_num', default=9, type=int, help='Net block num in iteration')
     parser.add_argument('--internal_iteration', default=6, type=int, help='ADMM-Net z block iteration num')
@@ -168,11 +169,8 @@ def main(args):
 
     down_matrix, up_matrix = random_sampling_create(down_rate, device_index)
 
-    test_file_path = [os.path.join(args.tst_dataset, 'image_test.npy'), 
-                      os.path.join(args.tst_dataset, f'echo_{int(down_rate * 100)}_test.npy')]
-
-    test_image = torch.tensor(np.load(test_file_path[0]), dtype=torch.complex64).to(device)
-    test_echo = torch.tensor(np.load(test_file_path[1]), dtype=torch.complex64).to(device)
+    test_image = torch.tensor(np.load(args.test_image), dtype=torch.complex64).to(device)
+    test_echo = torch.tensor(np.load(args.test_echo), dtype=torch.complex64).to(device)
 
     test_dataset = TensorDataset(test_image, test_echo)
 
@@ -209,10 +207,6 @@ def main(args):
     else:
         raise ValueError(f'Unknown network name found: {network}!')
     print('Model Initialized!')
-
-    split_path = weight_path.split('/')[-4:]
-    weight_path = os.path.join('../Dataset/FuShiping', 
-                               split_path[0], split_path[1], split_path[2], split_path[3])
 
     with warnings.catch_warnings():
         # avoid FutureWarning for 'weights_only=False'

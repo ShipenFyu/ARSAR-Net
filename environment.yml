@@ -1,0 +1,25 @@
+name: arsar-net
+
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+
+dependencies:
+  - python=3.10
+  - pip>=23
+  - pytorch=2.3.1
+  - torchvision=0.18.1
+  - pytorch-cuda=11.8
+  - numpy=1.26
+  - scipy=1.12
+  - matplotlib=3.8
+  - pillow=10.3
+  - h5py=3.11
+  - tqdm=4.66
+  - opencv=4.10
+  - gdal=3.9
+  - pip:
+      - mat73==0.65
+      - pytorch-wavelets==1.3.0
+      - torchpwl==0.2.0

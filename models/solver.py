@@ -3,7 +3,7 @@ from torch.fft import fft, ifft, fftshift, ifftshift
 
 
 def ista_l1_one_object(image, echo, processor: dict, down_matrix, up_matrix, 
-                       device, sparse_thr=0.01, length=5, res_thr=1e-6, maxiter=30):
+                       device, sparse_thr=0.01, length=5, res_thr=1e-6, maxiter=1000):
     """
     L1 regularized ISTA implementation with GPU acceleration
     
@@ -105,6 +105,69 @@ def admm_tv_one_object(image, echo, processor: dict, down_matrix, up_matrix, dev
         iter_num += 1
             
     return x
+
+
+def ista_l1_2_one_object(image, echo, processor: dict, down_matrix, up_matrix, 
+                         device, sparse_thr=0.01, length=5, res_thr=1e-6, maxiter=1000):
+    """
+    L1/2 regularized ISTA implementation with GPU acceleration
+    
+    params:
+        image (torch.Tensor): Initial image estimate
+        echo (torch.Tensor): Input echo matrix
+        processor (dict): System parameters dictionary
+        down_matrix (torch.Tensor): Downsampling matrix
+        up_matrix (torch.Tensor): Upsampling matrix
+        device (str): Device for torch('cuda' or 'cpu')
+        sparse_thr (int): Sparsity threshold parameter for half thresholding
+        length (int): Iteration step
+        res_thr (float): Convergence residual threshold
+        maxiter (int): Maximum number of iterations
+    
+    return :
+        torch.Tensor: Reconstructed SAR image
+    """
+    echo = echo.to(device)
+    
+    # initialize
+    nslow, nfast = image.shape
+    rst = torch.zeros((nslow, nfast), dtype=torch.complex64, device=device)
+    res = 1.0
+    iter_num = 0
+    
+    while iter_num < maxiter and res > res_thr:
+        rst_prev = rst.clone()
+        
+        residual = echo - echo_operator(rst, down_matrix, processor, device)
+        rst = rst + imaging_operator(residual, up_matrix, processor, device) / length
+
+        abs_rst = torch.abs(rst)
+        
+        # Half thresholding operator for L1/2 regularization
+        lambda_val = sparse_thr * abs_rst.max()
+        threshold_val = (3 / 2) * (lambda_val ** (2 / 3))
+        
+        # Compute threshold: keep values above threshold_val
+        mask = abs_rst > threshold_val
+        
+        # For values above threshold, apply half threshold operator
+        # Solution of L1/2: x = (2/3) * sign(y) * max(|y| - lambda^(2/3), 0)^(3/2) / lambda^(1/3)
+        # Simplified half threshold: x = sign(y) * (|y| - lambda * |y|^(-1/2) / 2)
+        phase = rst / (abs_rst + 1e-16)
+        
+        # Half threshold calculation
+        half_thr_val = lambda_val * torch.pow(abs_rst + 1e-16, -0.5) / 2
+        rst = torch.where(mask, 
+                          phase * torch.clamp(abs_rst - half_thr_val, min=0), 
+                          torch.tensor(0.0, dtype=rst.dtype, device=device))
+
+        numerator = torch.norm(rst - rst_prev, p='fro')
+        denominator = torch.norm(rst_prev, p='fro')
+        res = (numerator / (denominator + 1e-16)).item()
+
+        iter_num += 1
+    
+    return rst
 
 
 def imaging_operator(echo, up_matrix, processor, device):

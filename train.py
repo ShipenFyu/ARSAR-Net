@@ -54,12 +54,13 @@ class ComplexLoss(nn.Module):
 
 def get_args():
     parser = argparse.ArgumentParser(description='ARSAR-Net Training')
-    parser.add_argument('--trn_dataset', default='./data/concat', help='Training dataset directory')
+    parser.add_argument('--train_image', required=True, help='Path to the training image .npy file')
+    parser.add_argument('--train_echo', required=True, help='Path to the training echo .npy file')
     parser.add_argument('--val_size', default=400, type=int, help='Validation dataset size')
     parser.add_argument('--device', default='cuda:0', help='The device index used in training')
     parser.add_argument('--network', default='arsar', help='Backbone network (sr, pnp or arsar)')
     parser.add_argument('--criterion', default='norm', help='Criterion type (mse or norm)')
-    parser.add_argument('--regularization', default='haar', help='The regularization type in ARSAR-Net')
+    parser.add_argument('--regularization', default='swift', help='ARSAR-Net variant (swift or pro)')
     parser.add_argument('--epochs', default=100, type=int, help='Epochs')
     parser.add_argument('--nsave', default=1, type=int, help='Save model after every nSave epoch')
     parser.add_argument('--batch_size', default=4, type=int, help='Batch size for training')
@@ -67,6 +68,7 @@ def get_args():
     parser.add_argument('--layer_num', default=9, type=int, help='Net block num in iteration')
     parser.add_argument('--internal_iteration', default=6, type=int, help='ADMM-Net z block iteration num')
     parser.add_argument('--checkpoint', default=None, help='Continue model training')
+    parser.add_argument('--weights_dir', default='./weights', help='Directory for saved checkpoints')
     parser.add_argument('--down_rate', default=0.5, type=float, help='Azimuth down-sampling rate')
     args = parser.parse_args()
 
@@ -180,11 +182,8 @@ def main(args):
 
     down_matrix, up_matrix = random_sampling_create(down_rate, device_index)
 
-    train_file_path = [os.path.join(args.trn_dataset, 'image_train.npy'), 
-                    os.path.join(args.trn_dataset, f'echo_{int(down_rate * 100)}_train.npy')]
-
-    train_image = torch.tensor(np.load(train_file_path[0]), dtype=torch.complex64).to(device)
-    train_echo = torch.tensor(np.load(train_file_path[1]), dtype=torch.complex64).to(device)
+    train_image = torch.tensor(np.load(args.train_image), dtype=torch.complex64).to(device)
+    train_echo = torch.tensor(np.load(args.train_echo), dtype=torch.complex64).to(device)
 
     val_size = args.val_size
     random_indices = torch.randperm(len(train_image))
@@ -199,8 +198,8 @@ def main(args):
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
     print('DataLoader Finished!')
 
-    label = args.trn_dataset.split('/')[-1]
-    weights_dir = os.path.join('../Dataset/FuShiping/weights', label, datetime.now().strftime("%Y_%m_%d"))
+    label = os.path.basename(os.path.dirname(os.path.abspath(args.train_image)))
+    weights_dir = os.path.join(args.weights_dir, datetime.now().strftime("%Y_%m_%d"))
     if not os.path.exists(weights_dir):
         os.makedirs(weights_dir)
 

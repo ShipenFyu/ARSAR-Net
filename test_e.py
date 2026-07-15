@@ -15,8 +15,9 @@ from models.solver import ista_l1_one_object, admm_tv_one_object, imaging_operat
 
 def get_args():
     parser = argparse.ArgumentParser(description='Explicit Regularization Testing')
-    parser.add_argument('--tst_dataset', default='./data/concat', help='Testing dataset directory')
-    parser.add_argument('--device', default='cuda:3', help='The device index used in testing')
+    parser.add_argument('--test_image', required=True, help='Path to the test image .npy file')
+    parser.add_argument('--test_echo', required=True, help='Path to the test echo .npy file')
+    parser.add_argument('--device', default='cuda:0', help='The device index used in testing')
     parser.add_argument('--regularization', default='tv', help='The regularization type like l1, tv')
     parser.add_argument('--down_rate', default=0.5, type=float, help='Azimuth down-sampling rate')
     args = parser.parse_args()
@@ -159,11 +160,8 @@ def main(args):
     device = torch.device(device_index if torch.cuda.is_available() else "cpu")
     down_matrix, up_matrix = random_sampling_create(down_rate, device_index)
 
-    test_file_path = [os.path.join(args.tst_dataset, 'image_test.npy'), 
-                      os.path.join(args.tst_dataset, f'echo_{int(down_rate * 100)}_test.npy')]
-
-    test_image = torch.tensor(np.load(test_file_path[0]), dtype=torch.complex64).to(device)
-    test_echo = torch.tensor(np.load(test_file_path[1]), dtype=torch.complex64).to(device)
+    test_image = torch.tensor(np.load(args.test_image), dtype=torch.complex64).to(device)
+    test_echo = torch.tensor(np.load(args.test_echo), dtype=torch.complex64).to(device)
     print('DataLoader Finished!')
 
     index = [i for i in range(8)]
